@@ -148,20 +148,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	novaPath := "../nova"
+	if _, err := os.Stat("./go.mod"); err == nil {
+		// If created inside the nova repo itself
+		novaPath = "../"
+	} else if _, err := os.Stat("../nova/go.mod"); err == nil {
+		novaPath = "../nova"
+	} else if _, err := os.Stat("../go.mod"); err == nil {
+		novaPath = "../"
+	}
+
 	goModContent := fmt.Sprintf(`module %s
 
 go 1.22
 
 require github.com/vickychhetri/nova v0.1.0
 
-replace github.com/vickychhetri/nova => ../
-`, name)
+replace github.com/vickychhetri/nova => %s
+`, name, novaPath)
 
 	goModPath := filepath.Join(name, "go.mod")
 	_ = os.WriteFile(goModPath, []byte(goModContent), 0644)
 
 	fmt.Printf("✅ Application '%s' scaffolded successfully!\n", name)
-	fmt.Printf("\nTo get started:\n  cd %s\n  nova dev\n", name)
+	fmt.Printf("\nTo get started:\n  cd %s\n  go mod tidy\n  nova dev\n", name)
 }
 
 func runDev() {
