@@ -1,0 +1,16 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts & screenshots
+*.png
+*.jpg
+*.jpeg
+
+# IDE & OS files
+.DS_Store
+.idea/
+.vscode/
