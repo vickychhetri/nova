@@ -63,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `examples/03_forms_showcase`: Complete form input suite with automated validation.
   - `examples/04_widget_gallery`: Comprehensive component library catalog.
   - `examples/05_novadb`: Showcase database client with 100,000-row virtualized table, SQL editor, and connection sidebar.
+  - `examples/06_ip_scanner`: Concurrent multithreaded network discovery and port scanner with live telemetry.
+  - `examples/07_payslip_generator`: Enterprise payroll payslip designer with pure-Go vector PDF generator.
+  - `examples/08_vinfo`: Secure personal information vault & to-do manager with SQLite (`modernc.org/sqlite`), PIN lock authentication (`2212`), in-app PIN change settings, and custom V-Info branding.
 - **Documentation (`docs/`)**:
   - `docs/developer_guide.md`: Architecture guide, custom component tutorial, and state management.
   - `docs/integration_guide.md`: Database, REST/gRPC backend, and goroutine integration guide.

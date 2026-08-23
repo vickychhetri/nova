@@ -14,6 +14,11 @@ import (
 
 // --- Basic UI Primitives ---
 var (
+	All         = ui.All
+	Symmetric   = ui.Symmetric
+	TRBL        = ui.TRBL
+	Pt          = ui.Pt
+	Sz          = ui.Sz
 	Button      = ui.Button
 	Text        = ui.Text
 	Column      = ui.Column
@@ -28,6 +33,7 @@ var (
 	Spinner     = basic.Spinner
 	Progress    = basic.Progress
 	Card        = basic.Card
+	GroupBox    = basic.GroupBox
 	Skeleton    = basic.Skeleton
 	FormatCount = basic.FormatCount
 )
@@ -59,15 +65,28 @@ type SelectOption = forms.SelectOption
 
 // --- Navigation & Structure ---
 var (
-	Tabs       = nav.Tabs
-	Sidebar    = nav.Sidebar
-	SplitPane  = nav.SplitPane
-	Breadcrumb = nav.Breadcrumb
+	Tabs          = nav.Tabs
+	Sidebar       = nav.Sidebar
+	SplitPane     = nav.SplitPane
+	Breadcrumb    = nav.Breadcrumb
+	MenuBar       = nav.MenuBar
+	MenuBarSimple = nav.MenuBarFromItems
+	NewMenu       = nav.NewMenu
+	SimpleMenu    = nav.SimpleMenu
+	ActionItem    = nav.ActionItem
+	ShortcutItem  = nav.ShortcutItem
+	DividerItem   = nav.DividerItem
+	Toolbar       = nav.Toolbar
+	StatusBar     = nav.StatusBar
 )
 
 type TabItem = nav.TabItem
 type SidebarItem = nav.SidebarItem
 type BreadcrumbItem = nav.BreadcrumbItem
+type MenuBarItem = nav.MenuBarItem
+type Menu = nav.Menu
+type MenuItem = nav.MenuItem
+type StatusSegment = nav.StatusSegment
 
 const (
 	SplitHorizontal = nav.SplitHorizontal

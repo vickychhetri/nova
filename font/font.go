@@ -5,6 +5,15 @@ import (
 	"image/color"
 	"math"
 	"sync"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/gomedium"
+	"golang.org/x/image/font/gofont/gomono"
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
+	"golang.org/x/image/math/fixed"
 )
 
 // FontWeight represents standard font weight constants.
@@ -27,217 +36,187 @@ type GlyphMetrics struct {
 	Bitmap   *image.Alpha
 }
 
-// Font represents a font face with configurable size and weight.
-type Font struct {
-	Family string
-	Size   float64
-	Weight int
+// Global parsed font families
+var (
+	parsedRegular *sfnt.Font
+	parsedMedium  *sfnt.Font
+	parsedBold    *sfnt.Font
+	parsedMono    *sfnt.Font
+	fontsInitOnce sync.Once
+)
+
+func initFonts() {
+	fontsInitOnce.Do(func() {
+		parsedRegular, _ = opentype.Parse(goregular.TTF)
+		parsedMedium, _ = opentype.Parse(gomedium.TTF)
+		parsedBold, _ = opentype.Parse(gobold.TTF)
+		parsedMono, _ = opentype.Parse(gomono.TTF)
+	})
 }
 
-// GlyphCache caches rasterized glyph bitmaps.
-type GlyphCache struct {
-	mu    sync.RWMutex
-	cache map[cacheKey]GlyphMetrics
+// Face cache to avoid re-creating OpenType faces
+type faceKey struct {
+	weight int
+	size   int
 }
 
-type cacheKey struct {
+var (
+	faceCacheMu sync.RWMutex
+	faceCache   = make(map[faceKey]font.Face)
+)
+
+func getFace(fontSize float64, weight int) font.Face {
+	initFonts()
+
+	sizeInt := int(math.Round(fontSize))
+	if sizeInt < 8 {
+		sizeInt = 8
+	}
+
+	key := faceKey{weight: weight, size: sizeInt}
+
+	faceCacheMu.RLock()
+	if f, ok := faceCache[key]; ok {
+		faceCacheMu.RUnlock()
+		return f
+	}
+	faceCacheMu.RUnlock()
+
+	sf := parsedRegular
+	if weight >= WeightBold && parsedBold != nil {
+		sf = parsedBold
+	} else if weight >= WeightMedium && parsedMedium != nil {
+		sf = parsedMedium
+	}
+
+	face, err := opentype.NewFace(sf, &opentype.FaceOptions{
+		Size:    float64(sizeInt),
+		DPI:     72,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		// Fallback to regular
+		face, _ = opentype.NewFace(parsedRegular, &opentype.FaceOptions{
+			Size:    float64(sizeInt),
+			DPI:     72,
+			Hinting: font.HintingFull,
+		})
+	}
+
+	faceCacheMu.Lock()
+	faceCache[key] = face
+	faceCacheMu.Unlock()
+
+	return face
+}
+
+// Glyph Cache
+type glyphKey struct {
 	r      rune
 	size   int
 	weight int
 }
 
-var globalGlyphCache = &GlyphCache{
-	cache: make(map[cacheKey]GlyphMetrics),
-}
+var (
+	glyphCacheMu sync.RWMutex
+	glyphCache   = make(map[glyphKey]GlyphMetrics)
+)
 
-// GetGlyph returns glyph metrics and rasterized alpha bitmap for rune r.
+// GetGlyph returns glyph metrics and smooth vector rasterized alpha bitmap for rune r.
 func GetGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
 	sizeInt := int(math.Round(fontSize))
-	if sizeInt < 6 {
-		sizeInt = 6
+	if sizeInt < 8 {
+		sizeInt = 8
 	}
 
-	key := cacheKey{r: r, size: sizeInt, weight: weight}
+	key := glyphKey{r: r, size: sizeInt, weight: weight}
 
-	globalGlyphCache.mu.RLock()
-	if gm, ok := globalGlyphCache.cache[key]; ok {
-		globalGlyphCache.mu.RUnlock()
+	glyphCacheMu.RLock()
+	if gm, ok := glyphCache[key]; ok {
+		glyphCacheMu.RUnlock()
 		return gm
 	}
-	globalGlyphCache.mu.RUnlock()
+	glyphCacheMu.RUnlock()
 
-	// Rasterize glyph procedurally / cleanly using high-legibility proportional typography
-	gm := rasterizeGlyph(r, float64(sizeInt), weight)
+	gm := rasterizeVectorGlyph(r, float64(sizeInt), weight)
 
-	globalGlyphCache.mu.Lock()
-	globalGlyphCache.cache[key] = gm
-	globalGlyphCache.mu.Unlock()
+	glyphCacheMu.Lock()
+	glyphCache[key] = gm
+	glyphCacheMu.Unlock()
 
 	return gm
 }
 
-// Approximate character aspect ratio and spacing for standard typography.
+// MeasureCharWidth calculates exact proportional character advance using OpenType face.
 func MeasureCharWidth(r rune, fontSize float64, weight int) float64 {
-	switch {
-	case r == ' ' || r == '\t':
-		return fontSize * 0.32
-	case r == 'i' || r == 'l' || r == '!' || r == ':' || r == ';' || r == '.' || r == '\'' || r == '|':
-		return fontSize * 0.28
-	case r == 'f' || r == 'j' || r == 'r' || r == 't' || r == 'I':
-		return fontSize * 0.38
-	case r == 'm' || r == 'w' || r == 'M' || r == 'W' || r == '@' || r == '%':
-		return fontSize * 0.85
-	case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
-		return fontSize * 0.62
-	default:
-		return fontSize * 0.54
+	face := getFace(fontSize, weight)
+	if face == nil {
+		return fontSize * 0.55
 	}
+	adv, ok := face.GlyphAdvance(r)
+	if !ok {
+		return fontSize * 0.55
+	}
+	return float64(adv) / 64.0
 }
 
-func rasterizeGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
-	advance := MeasureCharWidth(r, fontSize, weight)
-	w := int(math.Ceil(advance))
-	h := int(math.Ceil(fontSize * 1.2))
-	if w < 1 {
-		w = 1
-	}
-	if h < 1 {
-		h = 1
+func rasterizeVectorGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
+	face := getFace(fontSize, weight)
+	metrics := face.Metrics()
+	ascent := float64(metrics.Ascent) / 64.0
+	descent := float64(metrics.Descent) / 64.0
+
+	bounds, adv, ok := face.GlyphBounds(r)
+	if !ok {
+		adv = fixed.I(int(fontSize * 0.55))
 	}
 
-	img := image.NewAlpha(image.Rect(0, 0, w, h))
+	advanceX := float64(adv) / 64.0
+	minX := float64(bounds.Min.X) / 64.0
+	minY := float64(bounds.Min.Y) / 64.0
+	maxX := float64(bounds.Max.X) / 64.0
+	maxY := float64(bounds.Max.Y) / 64.0
 
-	if r != ' ' && r != '\t' && r != '\n' {
-		// Draw smooth antialiased glyph bitmap
-		renderProceduralGlyph(img, r, w, h, fontSize, weight)
+	glyphW := int(math.Ceil(maxX - minX))
+	glyphH := int(math.Ceil(maxY - minY))
+
+	totalH := int(math.Ceil(ascent + descent))
+	if totalH < 1 {
+		totalH = int(math.Ceil(fontSize * 1.2))
 	}
+	totalW := int(math.Ceil(math.Max(advanceX, maxX)))
+	if totalW < 1 {
+		totalW = 1
+	}
+
+	dstRGBA := image.NewRGBA(image.Rect(0, 0, totalW, totalH))
+	drawer := &font.Drawer{
+		Dst:  dstRGBA,
+		Src:  image.NewUniform(color.RGBA{255, 255, 255, 255}),
+		Face: face,
+		Dot:  fixed.Point26_6{X: fixed.I(0), Y: fixed.I(int(ascent))},
+	}
+	drawer.DrawString(string(r))
+
+	alphaImg := image.NewAlpha(image.Rect(0, 0, totalW, totalH))
+	for y := 0; y < totalH; y++ {
+		for x := 0; x < totalW; x++ {
+			c := dstRGBA.RGBAAt(x, y)
+			alphaImg.SetAlpha(x, y, color.Alpha{A: c.A})
+		}
+	}
+
+	_ = glyphW
+	_ = glyphH
+	_ = minY
 
 	return GlyphMetrics{
 		Rune:     r,
-		Width:    float64(w),
-		Height:   float64(h),
-		AdvanceX: advance,
-		BearingX: 0,
-		BearingY: fontSize * 0.9,
-		Bitmap:   img,
-	}
-}
-
-// Render clean, legible anti-aliased character bitmaps into alpha mask.
-func renderProceduralGlyph(img *image.Alpha, r rune, w, h int, fontSize float64, weight int) {
-	// Baseline at 80% height
-	baseline := int(fontSize * 0.82)
-	capTop := int(fontSize * 0.20)
-	xHeightTop := int(fontSize * 0.42)
-
-	stroke := 1
-	if weight >= WeightBold || fontSize >= 24 {
-		stroke = 2
-	}
-	if fontSize >= 48 {
-		stroke = 3
-	}
-
-	drawVLine := func(x, y1, y2 int) {
-		for y := y1; y <= y2; y++ {
-			for s := 0; s < stroke; s++ {
-				if x+s < w && y < h && x+s >= 0 && y >= 0 {
-					img.SetAlpha(x+s, y, color.Alpha{A: 255})
-				}
-			}
-		}
-	}
-
-	drawHLine := func(x1, x2, y int) {
-		for x := x1; x <= x2; x++ {
-			for s := 0; s < stroke; s++ {
-				if x < w && y+s < h && x >= 0 && y+s >= 0 {
-					img.SetAlpha(x, y+s, color.Alpha{A: 255})
-				}
-			}
-		}
-	}
-
-	// High-fidelity scalable bitmap strokes for common runes
-	isUpper := r >= 'A' && r <= 'Z'
-	top := xHeightTop
-	if isUpper || r == 'd' || r == 'b' || r == 'l' || r == 'h' || r == 'k' || r == 't' || (r >= '0' && r <= '9') {
-		top = capTop
-	}
-	bottom := baseline
-	if r == 'g' || r == 'p' || r == 'q' || r == 'y' || r == 'j' {
-		bottom = h - 2
-	}
-
-	switch r {
-	case 'A':
-		drawVLine(0, top, bottom)
-		drawVLine(w-stroke, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w-1, (top+bottom)/2)
-	case 'B':
-		drawVLine(0, top, bottom)
-		drawHLine(0, w-stroke-1, top)
-		drawHLine(0, w-stroke-1, (top+bottom)/2)
-		drawHLine(0, w-stroke-1, bottom)
-		drawVLine(w-stroke, top, (top+bottom)/2)
-		drawVLine(w-stroke, (top+bottom)/2, bottom)
-	case 'C':
-		drawVLine(0, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w-1, bottom)
-	case 'D':
-		drawVLine(0, top, bottom)
-		drawHLine(0, w-stroke-1, top)
-		drawHLine(0, w-stroke-1, bottom)
-		drawVLine(w-stroke, top+1, bottom-1)
-	case 'E':
-		drawVLine(0, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w*2/3, (top+bottom)/2)
-		drawHLine(0, w-1, bottom)
-	case 'F':
-		drawVLine(0, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w*2/3, (top+bottom)/2)
-	case 'H':
-		drawVLine(0, top, bottom)
-		drawVLine(w-stroke, top, bottom)
-		drawHLine(0, w-1, (top+bottom)/2)
-	case 'I':
-		drawVLine(w/2, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w-1, bottom)
-	case 'L':
-		drawVLine(0, top, bottom)
-		drawHLine(0, w-1, bottom)
-	case 'O', '0':
-		drawVLine(0, top, bottom)
-		drawVLine(w-stroke, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w-1, bottom)
-	case 'T':
-		drawVLine(w/2, top, bottom)
-		drawHLine(0, w-1, top)
-	case '+':
-		drawVLine(w/2, top+2, bottom-2)
-		drawHLine(1, w-2, (top+bottom)/2)
-	case '-':
-		drawHLine(1, w-2, (top+bottom)/2)
-	case '_':
-		drawHLine(0, w-1, bottom)
-	case '.':
-		drawHLine(w/2-stroke/2, w/2+stroke/2, bottom)
-	case ':':
-		drawHLine(w/2-stroke/2, w/2+stroke/2, top+int(float64(bottom-top)*0.3))
-		drawHLine(w/2-stroke/2, w/2+stroke/2, bottom)
-	case '>':
-		drawHLine(0, w-1, (top+bottom)/2)
-	default:
-		// Universal fallback character rendering: frame with inner dot
-		drawVLine(0, top, bottom)
-		drawVLine(w-stroke, top, bottom)
-		drawHLine(0, w-1, top)
-		drawHLine(0, w-1, bottom)
+		Width:    float64(totalW),
+		Height:   float64(totalH),
+		AdvanceX: advanceX,
+		BearingX: minX,
+		BearingY: ascent,
+		Bitmap:   alphaImg,
 	}
 }

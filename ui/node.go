@@ -28,6 +28,10 @@ type Node struct {
 	OnScroll       func(e *event.ScrollEvent)
 	OnKeyDown      func(e *event.KeyEvent)
 	OnKeyUp        func(e *event.KeyEvent)
+	// Overlay handlers for floating popups and dropdowns
+	PaintOverlay         func(canvas *render.Canvas)
+	OnOverlayPointerDown func(p geom.Point) bool
+	OnOverlayPointerMove func(p geom.Point) bool
 
 	// Cleanups registered by state/effects
 	unsubscribes []func()
@@ -117,10 +121,10 @@ func (n *Node) Paint(canvas *render.Canvas) {
 	canvas.Restore()
 }
 
-// HitTest traverses node hierarchy and returns deepest interactive node under point p.
-func (n *Node) HitTest(p geom.Point) *Node {
+// HitTestLocal traverses node hierarchy and returns deepest interactive node and point in local coordinates.
+func (n *Node) HitTestLocal(p geom.Point) (*Node, geom.Point) {
 	if !n.Bounds.ContainsPoint(p) {
-		return nil
+		return nil, geom.Point{}
 	}
 
 	localPoint := p.Sub(n.Bounds.Origin())
@@ -128,17 +132,34 @@ func (n *Node) HitTest(p geom.Point) *Node {
 	// Check children in reverse order (top-most z-index first)
 	for i := len(n.Children) - 1; i >= 0; i-- {
 		child := n.Children[i]
-		hit := child.HitTest(localPoint)
+		child.Parent = n
+		hit, lp := child.HitTestLocal(localPoint)
 		if hit != nil {
-			return hit
+			return hit, lp
 		}
 	}
 
 	if n.IsInteractive() {
-		return n
+		return n, localPoint
 	}
 
-	return nil
+	return nil, geom.Point{}
+}
+
+// HitTest traverses node hierarchy and returns deepest interactive node under point p.
+func (n *Node) HitTest(p geom.Point) *Node {
+	hit, _ := n.HitTestLocal(p)
+	return hit
+}
+
+// GlobalToLocal transforms a global point into local node coordinate space.
+func (n *Node) GlobalToLocal(p geom.Point) geom.Point {
+	cur := n
+	for cur != nil {
+		p = p.Sub(cur.Bounds.Origin())
+		cur = cur.Parent
+	}
+	return p
 }
 
 // IsInteractive returns true if node has interactive event handlers.
@@ -150,6 +171,46 @@ func (n *Node) IsInteractive() bool {
 		n.OnScroll != nil ||
 		n.OnKeyDown != nil ||
 		n.OnKeyUp != nil
+}
+
+// PaintOverlays recursively paints overlay layers on top of the base UI tree.
+func (n *Node) PaintOverlays(canvas *render.Canvas) {
+	if n.PaintOverlay != nil {
+		n.PaintOverlay(canvas)
+	}
+	for _, child := range n.Children {
+		child.PaintOverlays(canvas)
+	}
+}
+
+// DispatchOverlayPointerDown recursively checks if any active overlay handles pointer down.
+func (n *Node) DispatchOverlayPointerDown(p geom.Point) bool {
+	if n.OnOverlayPointerDown != nil {
+		if n.OnOverlayPointerDown(p) {
+			return true
+		}
+	}
+	for _, child := range n.Children {
+		if child.DispatchOverlayPointerDown(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// DispatchOverlayPointerMove recursively checks if any active overlay handles pointer move.
+func (n *Node) DispatchOverlayPointerMove(p geom.Point) bool {
+	if n.OnOverlayPointerMove != nil {
+		if n.OnOverlayPointerMove(p) {
+			return true
+		}
+	}
+	for _, child := range n.Children {
+		if child.DispatchOverlayPointerMove(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Unmount disposes resources and children.

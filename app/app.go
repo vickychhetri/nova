@@ -2,7 +2,9 @@ package app
 
 import (
 	"sync"
+	"time"
 
+	"github.com/vickychhetri/nova/platform"
 	"github.com/vickychhetri/nova/window"
 )
 
@@ -36,15 +38,43 @@ func (a *App) Windows() []*window.Window {
 	return a.windows
 }
 
-// Run starts the application loop and renders active windows.
+// Run starts the application loop, creates native OS windows, and processes interaction events.
 func (a *App) Run() error {
 	a.mu.Lock()
 	a.running = true
 	windows := append([]*window.Window{}, a.windows...)
 	a.mu.Unlock()
 
+	hasNative := false
+
 	for _, win := range windows {
+		nw, err := platform.CreatePlatformWindow(win.Title(), int(win.Size().Width), int(win.Size().Height))
+		if err == nil && nw != nil {
+			win.AttachNative(nw)
+			hasNative = true
+		}
 		win.RenderFrame()
+	}
+
+	// If running with a native OS windowing display, enter the event pump loop
+	if hasNative {
+		for a.running {
+			anyOpen := false
+			for _, win := range windows {
+				if win.NativeWindow() != nil {
+					if win.NativeWindow().PollEvents() {
+						anyOpen = true
+					}
+					if win.NeedsRedraw() {
+						win.RenderFrame()
+					}
+				}
+			}
+			if !anyOpen {
+				break
+			}
+			time.Sleep(8 * time.Millisecond)
+		}
 	}
 
 	return nil

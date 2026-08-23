@@ -3,6 +3,9 @@ package forms_test
 import (
 	"testing"
 
+	"github.com/vickychhetri/nova/core/geom"
+	"github.com/vickychhetri/nova/event"
+	"github.com/vickychhetri/nova/input"
 	"github.com/vickychhetri/nova/layout"
 	"github.com/vickychhetri/nova/render"
 	"github.com/vickychhetri/nova/state"
@@ -103,8 +106,62 @@ func TestFormWidgetsRendering(t *testing.T) {
 	buf := render.NewCommandBuffer()
 	canvas := render.NewCanvas(buf)
 	node.Paint(canvas)
-
 	if buf.Len() == 0 {
 		t.Fatal("expected paint commands for form widgets")
+	}
+}
+
+func TestNumberInputInteraction(t *testing.T) {
+	val := state.Float(100.0)
+	comp := forms.NumberInput(100.0).
+		Bind(val).
+		WithLabel("Amount ($)").
+		WithStep(25.0).
+		WithMinMax(0, 500).
+		WithWidth(200.0)
+
+	node := ui.NewNode(comp)
+	node.Mount(ui.BuildContext{
+		Theme: theme.Light(),
+		Scale: 1.0,
+	})
+
+	sz := node.Layout(layout.Tight(geom.Sz(200, 52)))
+	node.Bounds = geom.NewRect(0, 0, sz.Width, sz.Height)
+
+	if node.OnPointerDown == nil {
+		t.Fatal("expected OnPointerDown handler to be registered on NumberInput")
+	}
+
+	// Click Plus button (+ is on right edge, e.g. x=190, y=30)
+	node.OnPointerDown(&event.PointerEvent{
+		Position: geom.Pt(190, 30),
+	})
+	if val.Get() != 125.0 {
+		t.Fatalf("expected val to be 125.0 after clicking plus, got %.2f", val.Get())
+	}
+
+	// Click Minus button (- is at x=165, y=30)
+	node.OnPointerDown(&event.PointerEvent{
+		Position: geom.Pt(165, 30),
+	})
+	if val.Get() != 100.0 {
+		t.Fatalf("expected val to be 100.0 after clicking minus, got %.2f", val.Get())
+	}
+
+	// Arrow Up key
+	node.OnKeyDown(&event.KeyEvent{
+		Key: input.KeyArrowUp,
+	})
+	if val.Get() != 125.0 {
+		t.Fatalf("expected val to be 125.0 after ArrowUp, got %.2f", val.Get())
+	}
+
+	// Arrow Down key
+	node.OnKeyDown(&event.KeyEvent{
+		Key: input.KeyArrowDown,
+	})
+	if val.Get() != 100.0 {
+		t.Fatalf("expected val to be 100.0 after ArrowDown, got %.2f", val.Get())
 	}
 }

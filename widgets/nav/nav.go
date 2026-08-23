@@ -3,6 +3,7 @@ package nav
 import (
 	"github.com/vickychhetri/nova/core/color"
 	"github.com/vickychhetri/nova/core/geom"
+	"github.com/vickychhetri/nova/event"
 	"github.com/vickychhetri/nova/font"
 	"github.com/vickychhetri/nova/layout"
 	"github.com/vickychhetri/nova/render"
@@ -50,6 +51,23 @@ func (tc *TabsComponent) Layout(node *ui.Node, constraints layout.BoxConstraints
 	var activeContent ui.Component
 	if len(tc.Tabs) > 0 {
 		activeContent = tc.Tabs[activeIdx].Content
+	}
+
+	node.OnPointerDown = func(e *event.PointerEvent) {
+		if e.Position.Y <= 44 {
+			curX := 16.0
+			for i, tab := range tc.Tabs {
+				txtSz := text.MeasureText(tab.Title, 13, font.WeightMedium)
+				tabW := txtSz.Width + 24.0
+				if e.Position.X >= curX && e.Position.X <= curX+tabW {
+					if tc.ActiveIndex != nil {
+						tc.ActiveIndex.Set(i)
+					}
+					break
+				}
+				curX += tabW + 8.0
+			}
+		}
 	}
 
 	// Reconcile child node for active tab body
@@ -133,12 +151,12 @@ func Sidebar(headerTitle string, items ...SidebarItem) *SidebarComponent {
 	return &SidebarComponent{
 		HeaderTitle: headerTitle,
 		Items:       items,
-		Width:       220,
+		Width:       230,
 	}
 }
 
 func (s *SidebarComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
-	h := float64(len(s.Items))*40.0 + 60.0
+	h := float64(len(s.Items))*42.0 + 64.0
 	if constraints.HasBoundedHeight() {
 		h = constraints.MaxHeight
 	}
@@ -153,29 +171,39 @@ func (s *SidebarComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 	canvas.FillRect(geom.NewRect(0, 0, w, h), t.Palette.Surface)
 	canvas.DrawLine(geom.Pt(w, 0), geom.Pt(w, h), t.Palette.Border, 1.0)
 
-	// Header
+	// Header section
 	if s.HeaderTitle != "" {
-		canvas.DrawText(s.HeaderTitle, geom.Pt(16, 18), 16, font.WeightBold, t.Palette.TextPrimary)
+		headerH := 48.0
+		canvas.DrawText(s.HeaderTitle, geom.Pt(16, 16), 14, font.WeightBold, t.Palette.TextPrimary)
+		canvas.DrawLine(geom.Pt(0, headerH), geom.Pt(w, headerH), t.Palette.Border, 1.0)
 	}
 
-	curY := 52.0
+	curY := 56.0
 	for _, item := range s.Items {
 		itemRect := geom.NewRect(8, curY, w-16, 36)
 		textCol := t.Palette.TextSecondary
+		fontWeight := font.WeightMedium
+
 		if item.Selected {
-			canvas.FillRoundedRect(itemRect, t.Radii.MD, t.Palette.Primary.WithAlpha(0.15))
+			canvas.FillRoundedRect(itemRect, geom.RadiusUniform(6), t.Palette.Primary.WithAlpha(0.12))
+			// Left indicator bar
+			indicatorRect := geom.NewRect(8, curY+6, 3.5, 24)
+			canvas.FillRoundedRect(indicatorRect, geom.RadiusUniform(2), t.Palette.Primary)
 			textCol = t.Palette.Primary
+			fontWeight = font.WeightBold
 		}
 
 		iconPrefix := item.Icon
 		if iconPrefix != "" {
-			iconPrefix += " "
+			iconPrefix += "  "
 		}
-		canvas.DrawText(iconPrefix+item.Title, geom.Pt(18, curY+10), 13, font.WeightMedium, textCol)
+		canvas.DrawText(iconPrefix+item.Title, geom.Pt(18, curY+10), 13, fontWeight, textCol)
 
 		if item.Badge != "" {
-			badgeSz := text.MeasureText(item.Badge, 11, font.WeightRegular)
-			canvas.DrawText(item.Badge, geom.Pt(w-24-badgeSz.Width, curY+11), 11, font.WeightRegular, t.Palette.TextMuted)
+			badgeSz := text.MeasureText(item.Badge, 11, font.WeightMedium)
+			bRect := geom.NewRect(w-20-badgeSz.Width-10, curY+8, badgeSz.Width+10, 20)
+			canvas.FillRoundedRect(bRect, geom.RadiusUniform(10), t.Palette.Secondary)
+			canvas.DrawText(item.Badge, geom.Pt(bRect.X+5, curY+11), 11, font.WeightMedium, t.Palette.TextMuted)
 		}
 
 		curY += 40.0
@@ -193,8 +221,9 @@ const (
 
 type SplitPaneComponent struct {
 	ui.BaseComponent
-	Direction SplitDirection
+	Direction  SplitDirection
 	SplitRatio *state.Value[float64] // 0.0 to 1.0
+	FixedFirst float64               // >0 to fix first pane width/height
 	First      ui.Component
 	Second     ui.Component
 }
@@ -209,6 +238,18 @@ func SplitPane(dir SplitDirection, first, second ui.Component) *SplitPaneCompone
 	}
 }
 
+func (sp *SplitPaneComponent) WithRatio(r float64) *SplitPaneComponent {
+	if sp.SplitRatio != nil {
+		sp.SplitRatio.Set(r)
+	}
+	return sp
+}
+
+func (sp *SplitPaneComponent) WithFixedFirst(w float64) *SplitPaneComponent {
+	sp.FixedFirst = w
+	return sp
+}
+
 func (sp *SplitPaneComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
 	if len(node.Children) != 2 {
 		node.Children = []*ui.Node{ui.NewNode(sp.First), ui.NewNode(sp.Second)}
@@ -219,22 +260,33 @@ func (sp *SplitPaneComponent) Layout(node *ui.Node, constraints layout.BoxConstr
 		node.Children[1].Component = sp.Second
 	}
 
-	ratio := 0.5
-	if sp.SplitRatio != nil {
-		ratio = sp.SplitRatio.Get()
-	}
-
 	totalW := constraints.MaxWidth
 	totalH := constraints.MaxHeight
 
 	if sp.Direction == SplitHorizontal {
-		splitW := totalW * ratio
+		splitW := totalW * 0.5
+		if sp.FixedFirst > 0 {
+			splitW = sp.FixedFirst
+		} else if sp.SplitRatio != nil {
+			splitW = totalW * sp.SplitRatio.Get()
+		}
+		if splitW > totalW-20 {
+			splitW = totalW - 20
+		}
 		node.Children[0].Bounds = geom.NewRect(0, 0, splitW, totalH)
 		node.Children[1].Bounds = geom.NewRect(splitW+1, 0, totalW-splitW-1, totalH)
 		node.Children[0].Layout(layout.Tight(geom.Sz(splitW, totalH)))
 		node.Children[1].Layout(layout.Tight(geom.Sz(totalW-splitW-1, totalH)))
 	} else {
-		splitH := totalH * ratio
+		splitH := totalH * 0.5
+		if sp.FixedFirst > 0 {
+			splitH = sp.FixedFirst
+		} else if sp.SplitRatio != nil {
+			splitH = totalH * sp.SplitRatio.Get()
+		}
+		if splitH > totalH-20 {
+			splitH = totalH - 20
+		}
 		node.Children[0].Bounds = geom.NewRect(0, 0, totalW, splitH)
 		node.Children[1].Bounds = geom.NewRect(0, splitH+1, totalW, totalH-splitH-1)
 		node.Children[0].Layout(layout.Tight(geom.Sz(totalW, splitH)))
@@ -304,6 +356,414 @@ func (b *BreadcrumbComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 			canvas.DrawText(" / ", geom.Pt(curX, 4), 13, font.WeightRegular, t.Palette.TextDisabled)
 			curX += text.MeasureText(" / ", 13, font.WeightRegular).Width
 		}
+	}
+}
+
+// --- Enterprise MenuBar (Qt QMenuBar Style with Dropdowns & Events) ---
+
+type MenuItem struct {
+	Title    string
+	Shortcut string
+	Disabled bool
+	Divider  bool
+	OnClick  func()
+	Children []MenuItem
+}
+
+// ActionItem creates a standard clickable menu item.
+func ActionItem(title string, onClick func()) MenuItem {
+	return MenuItem{Title: title, OnClick: onClick}
+}
+
+// ShortcutItem creates a clickable menu item with a keyboard shortcut hint.
+func ShortcutItem(title, shortcut string, onClick func()) MenuItem {
+	return MenuItem{Title: title, Shortcut: shortcut, OnClick: onClick}
+}
+
+// DividerItem creates a visual separator between menu item groups.
+func DividerItem() MenuItem {
+	return MenuItem{Divider: true}
+}
+
+type Menu struct {
+	Title   string
+	Items   []MenuItem
+	OnClick func()
+}
+
+// NewMenu creates a dropdown menu containing menu items.
+func NewMenu(title string, items ...MenuItem) Menu {
+	return Menu{Title: title, Items: items}
+}
+
+// SimpleMenu creates a single-click menu button without a dropdown.
+func SimpleMenu(title string, onClick func()) Menu {
+	return Menu{Title: title, OnClick: onClick}
+}
+
+// MenuBarItem is maintained for backward compatibility.
+type MenuBarItem struct {
+	Title   string
+	OnClick func()
+}
+
+type MenuBarComponent struct {
+	ui.BaseComponent
+	Menus      []Menu
+	ActiveMenu *state.Value[int] // -1 = closed, 0..N = active dropdown menu
+	HoverIndex *state.Value[int] // hover index for bar items
+	HoverSub   *state.Value[int] // hover index for popup items
+}
+
+// MenuBar creates a native desktop top application menu bar with dropdown menus and event handlers.
+func MenuBar(menus ...Menu) *MenuBarComponent {
+	return &MenuBarComponent{
+		Menus:      menus,
+		ActiveMenu: state.Int(-1),
+		HoverIndex: state.Int(-1),
+		HoverSub:   state.Int(-1),
+	}
+}
+
+// MenuBarFromItems creates a menu bar from simple MenuBarItem list (backward compatibility).
+func MenuBarFromItems(items ...MenuBarItem) *MenuBarComponent {
+	menus := make([]Menu, len(items))
+	for i, it := range items {
+		menus[i] = Menu{Title: it.Title, OnClick: it.OnClick}
+	}
+	return MenuBar(menus...)
+}
+
+func (mb *MenuBarComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
+	// Menu bar layout height is ALWAYS fixed at 28px (never pushes content down)
+	h := 28.0
+
+	node.OnPointerDown = func(e *event.PointerEvent) {
+		activeIdx := -1
+		if mb.ActiveMenu != nil {
+			activeIdx = mb.ActiveMenu.Get()
+		}
+
+		if e.Position.Y <= 28.0 {
+			curX := 10.0
+			for i, m := range mb.Menus {
+				txtW := text.MeasureText(m.Title, 12, font.WeightMedium).Width
+				itemW := txtW + 20.0
+				if e.Position.X >= curX && e.Position.X <= curX+itemW {
+					if len(m.Items) > 0 {
+						if activeIdx == i {
+							mb.ActiveMenu.Set(-1)
+						} else {
+							mb.ActiveMenu.Set(i)
+						}
+					} else {
+						if mb.ActiveMenu != nil {
+							mb.ActiveMenu.Set(-1)
+						}
+						if m.OnClick != nil {
+							m.OnClick()
+						}
+					}
+					return
+				}
+				curX += itemW + 4.0
+			}
+			if mb.ActiveMenu != nil {
+				mb.ActiveMenu.Set(-1)
+			}
+		}
+	}
+
+	node.OnPointerMove = func(e *event.PointerEvent) {
+		activeIdx := -1
+		if mb.ActiveMenu != nil {
+			activeIdx = mb.ActiveMenu.Get()
+		}
+
+		if e.Position.Y <= 28.0 {
+			curX := 10.0
+			for i, m := range mb.Menus {
+				txtW := text.MeasureText(m.Title, 12, font.WeightMedium).Width
+				itemW := txtW + 20.0
+				if e.Position.X >= curX && e.Position.X <= curX+itemW {
+					if mb.HoverIndex != nil && mb.HoverIndex.Get() != i {
+						mb.HoverIndex.Set(i)
+					}
+					if activeIdx >= 0 && activeIdx != i && len(m.Items) > 0 {
+						mb.ActiveMenu.Set(i)
+					}
+					return
+				}
+				curX += itemW + 4.0
+			}
+			if mb.HoverIndex != nil && mb.HoverIndex.Get() != -1 {
+				mb.HoverIndex.Set(-1)
+			}
+		}
+	}
+
+	node.OnPointerLeave = func() {
+		if mb.HoverIndex != nil {
+			mb.HoverIndex.Set(-1)
+		}
+		if mb.HoverSub != nil {
+			mb.HoverSub.Set(-1)
+		}
+	}
+
+	return constraints.Constrain(geom.Sz(constraints.MaxWidth, h))
+}
+
+func (mb *MenuBarComponent) Paint(node *ui.Node, canvas *render.Canvas) {
+	t := theme.Current()
+	w := node.Bounds.Width
+	barH := 28.0
+
+	// Menu bar background
+	canvas.FillRect(geom.NewRect(0, 0, w, barH), t.Palette.Surface)
+	canvas.DrawLine(geom.Pt(0, barH), geom.Pt(w, barH), t.Palette.Border, 1.0)
+
+	activeIdx := -1
+	if mb.ActiveMenu != nil {
+		activeIdx = mb.ActiveMenu.Get()
+	}
+	hoverIdx := -1
+	if mb.HoverIndex != nil {
+		hoverIdx = mb.HoverIndex.Get()
+	}
+
+	// Render Top Menu Items
+	curX := 10.0
+	menuOffsets := make([]float64, len(mb.Menus))
+	for i, m := range mb.Menus {
+		menuOffsets[i] = curX
+		txtSz := text.MeasureText(m.Title, 12, font.WeightMedium)
+		itemW := txtSz.Width + 20.0
+
+		if i == activeIdx {
+			canvas.FillRoundedRect(geom.NewRect(curX, 3, itemW, barH-6), geom.RadiusUniform(4), t.Palette.Primary)
+			canvas.DrawText(m.Title, geom.Pt(curX+10, 7), 12, font.WeightMedium, color.White)
+		} else if i == hoverIdx {
+			canvas.FillRoundedRect(geom.NewRect(curX, 3, itemW, barH-6), geom.RadiusUniform(4), t.Palette.SecondaryHover)
+			canvas.DrawText(m.Title, geom.Pt(curX+10, 7), 12, font.WeightMedium, t.Palette.TextPrimary)
+		} else {
+			canvas.DrawText(m.Title, geom.Pt(curX+10, 7), 12, font.WeightMedium, t.Palette.TextPrimary)
+		}
+
+		curX += itemW + 4.0
+	}
+
+	// Configure Floating Overlay for active dropdown
+	if activeIdx >= 0 && activeIdx < len(mb.Menus) && len(mb.Menus[activeIdx].Items) > 0 {
+		m := mb.Menus[activeIdx]
+		menuX := menuOffsets[activeIdx]
+		popupW := 220.0
+		popupH := float64(len(m.Items))*26.0 + 12.0
+
+		// Register overlay painter (painted ON TOP of all other widgets)
+		node.PaintOverlay = func(c *render.Canvas) {
+			popupRect := geom.NewRect(menuX, barH+1, popupW, popupH)
+			c.FillRoundedRect(popupRect, geom.RadiusUniform(6), t.Palette.Surface)
+			c.StrokeRoundedRect(popupRect, geom.RadiusUniform(6), t.Palette.Border, 1.0)
+
+			hoverSub := -1
+			if mb.HoverSub != nil {
+				hoverSub = mb.HoverSub.Get()
+			}
+
+			itemY := barH + 6.0
+			for j, item := range m.Items {
+				itemRect := geom.NewRect(menuX+4, itemY, popupW-8, 24)
+
+				if item.Divider {
+					c.DrawLine(geom.Pt(menuX+8, itemY+12), geom.Pt(menuX+popupW-8, itemY+12), t.Palette.Border, 1.0)
+				} else {
+					if j == hoverSub && !item.Disabled {
+						c.FillRoundedRect(itemRect, geom.RadiusUniform(4), t.Palette.SecondaryHover)
+					}
+
+					textCol := t.Palette.TextPrimary
+					if item.Disabled {
+						textCol = t.Palette.TextMuted
+					}
+
+					c.DrawText(item.Title, geom.Pt(menuX+12, itemY+5), 12, font.WeightRegular, textCol)
+
+					if item.Shortcut != "" {
+						scSz := text.MeasureText(item.Shortcut, 11, font.WeightRegular)
+						c.DrawText(item.Shortcut, geom.Pt(menuX+popupW-scSz.Width-12, itemY+6), 11, font.WeightRegular, t.Palette.TextSecondary)
+					}
+				}
+
+				itemY += 26.0
+			}
+		}
+
+		// Register overlay pointer down handler
+		node.OnOverlayPointerDown = func(p geom.Point) bool {
+			// If clicked inside dropdown popup
+			if p.X >= menuX && p.X <= menuX+popupW && p.Y >= barH && p.Y <= barH+popupH {
+				itemIdx := int((p.Y - (barH + 6.0)) / 26.0)
+				if itemIdx >= 0 && itemIdx < len(m.Items) {
+					item := m.Items[itemIdx]
+					if !item.Disabled && !item.Divider && item.OnClick != nil {
+						item.OnClick()
+					}
+				}
+				mb.ActiveMenu.Set(-1)
+				return true
+			}
+
+			// If clicked on top bar, let regular bar handler process it
+			if p.Y <= barH {
+				return false
+			}
+
+			// Clicked outside on window content -> dismiss menu without triggering content click
+			mb.ActiveMenu.Set(-1)
+			return true
+		}
+
+		// Register overlay pointer move handler
+		node.OnOverlayPointerMove = func(p geom.Point) bool {
+			if p.X >= menuX && p.X <= menuX+popupW && p.Y >= barH && p.Y <= barH+popupH {
+				itemIdx := int((p.Y - (barH + 6.0)) / 26.0)
+				if mb.HoverSub != nil && mb.HoverSub.Get() != itemIdx {
+					mb.HoverSub.Set(itemIdx)
+				}
+				return true
+			} else {
+				if mb.HoverSub != nil && mb.HoverSub.Get() != -1 {
+					mb.HoverSub.Set(-1)
+				}
+			}
+
+			if p.Y <= barH {
+				curX := 10.0
+				for i, barMenu := range mb.Menus {
+					txtW := text.MeasureText(barMenu.Title, 12, font.WeightMedium).Width
+					itemW := txtW + 20.0
+					if p.X >= curX && p.X <= curX+itemW {
+						if mb.HoverIndex != nil && mb.HoverIndex.Get() != i {
+							mb.HoverIndex.Set(i)
+						}
+						if activeIdx != i && len(barMenu.Items) > 0 {
+							mb.ActiveMenu.Set(i)
+						}
+						return true
+					}
+					curX += itemW + 4.0
+				}
+			}
+
+			return false
+		}
+	} else {
+		node.PaintOverlay = nil
+		node.OnOverlayPointerDown = nil
+		node.OnOverlayPointerMove = nil
+	}
+}
+
+// --- Enterprise Toolbar (Qt QToolBar Style) ---
+
+type ToolbarComponent struct {
+	ui.BaseComponent
+	Children []ui.Component
+}
+
+// Toolbar creates a horizontal actions toolbar.
+func Toolbar(children ...ui.Component) *ToolbarComponent {
+	return &ToolbarComponent{Children: children}
+}
+
+func (tb *ToolbarComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
+	h := 46.0
+	curX := 14.0
+
+	if len(node.Children) == 0 {
+		for _, child := range tb.Children {
+			cn := ui.NewNode(child)
+			cn.Parent = node
+			node.Children = append(node.Children, cn)
+		}
+	}
+
+	for i, cn := range node.Children {
+		cn.Component = tb.Children[i]
+		cSz := cn.Layout(layout.Loose(geom.Sz(constraints.MaxWidth-curX, h-12)))
+		cn.Bounds = geom.NewRect(curX, 6, cSz.Width, cSz.Height)
+		curX += cSz.Width + 10.0
+	}
+
+	return constraints.Constrain(geom.Sz(constraints.MaxWidth, h))
+}
+
+func (tb *ToolbarComponent) Paint(node *ui.Node, canvas *render.Canvas) {
+	t := theme.Current()
+	w := node.Bounds.Width
+	h := 46.0
+
+	canvas.FillRect(geom.NewRect(0, 0, w, h), t.Palette.Surface)
+	canvas.DrawLine(geom.Pt(0, h), geom.Pt(w, h), t.Palette.Border, 1.0)
+
+	for _, child := range node.Children {
+		child.Paint(canvas)
+	}
+}
+
+// --- Enterprise StatusBar (Qt QStatusBar Style) ---
+
+type StatusSegment struct {
+	Text  string
+	Width float64
+}
+
+type StatusBarComponent struct {
+	ui.BaseComponent
+	MainMessage string
+	Segments    []StatusSegment
+}
+
+// StatusBar creates a native desktop bottom status bar with panels.
+func StatusBar(mainMsg string, segments ...StatusSegment) *StatusBarComponent {
+	return &StatusBarComponent{
+		MainMessage: mainMsg,
+		Segments:    segments,
+	}
+}
+
+func (sb *StatusBarComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
+	return constraints.Constrain(geom.Sz(constraints.MaxWidth, 26))
+}
+
+func (sb *StatusBarComponent) Paint(node *ui.Node, canvas *render.Canvas) {
+	t := theme.Current()
+	w := node.Bounds.Width
+	h := 26.0
+
+	canvas.FillRect(geom.NewRect(0, 0, w, h), t.Palette.Surface)
+	canvas.DrawLine(geom.Pt(0, 0), geom.Pt(w, 0), t.Palette.Border, 1.0)
+
+	// Status indicator dot
+	canvas.FillCircle(geom.Pt(16, 13), 3.5, t.Palette.Success)
+
+	// Main message on left
+	canvas.DrawText(sb.MainMessage, geom.Pt(26, 6), 11, font.WeightRegular, t.Palette.TextSecondary)
+
+	// Right aligned status segments
+	curRight := w - 10.0
+	for i := len(sb.Segments) - 1; i >= 0; i-- {
+		seg := sb.Segments[i]
+		segW := seg.Width
+		if segW <= 0 {
+			segW = text.MeasureText(seg.Text, 11, font.WeightRegular).Width + 16.0
+		}
+		curRight -= segW
+
+		// Vertical divider
+		canvas.DrawLine(geom.Pt(curRight, 4), geom.Pt(curRight, h-4), t.Palette.Border, 1.0)
+		canvas.DrawText(seg.Text, geom.Pt(curRight+8, 6), 11, font.WeightRegular, t.Palette.TextMuted)
 	}
 }
 

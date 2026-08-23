@@ -27,14 +27,14 @@ func main() {
 
 	// Sidebar tree: Connections and Tables
 	sidebar := widgets.Sidebar("NovaDB",
-		widgets.SidebarItem{Title: "postgres://prod-db", Icon: "🐘", Selected: true},
-		widgets.SidebarItem{Title: "mysql://analytics", Icon: "🐬"},
-		widgets.SidebarItem{Title: "sqlite://local.db", Icon: "📁"},
-		widgets.SidebarItem{Title: "Tables (5)", Icon: "📑"},
-		widgets.SidebarItem{Title: "  ├ users", Icon: "📄"},
-		widgets.SidebarItem{Title: "  ├ employees", Icon: "📄", Selected: true},
-		widgets.SidebarItem{Title: "  ├ orders", Icon: "📄"},
-		widgets.SidebarItem{Title: "  └ transactions", Icon: "📄"},
+		widgets.SidebarItem{Title: "postgres://prod-db", Icon: "#", Selected: true},
+		widgets.SidebarItem{Title: "mysql://analytics", Icon: "#"},
+		widgets.SidebarItem{Title: "sqlite://local.db", Icon: "$"},
+		widgets.SidebarItem{Title: "Tables (4)", Icon: "="},
+		widgets.SidebarItem{Title: "  | users", Icon: "-"},
+		widgets.SidebarItem{Title: "  | employees", Icon: "-", Selected: true},
+		widgets.SidebarItem{Title: "  | orders", Icon: "-"},
+		widgets.SidebarItem{Title: "  | transactions", Icon: "-"},
 	)
 
 	// Top SQL Editor Box

@@ -25,11 +25,11 @@ func main() {
 
 	// Left Sidebar
 	sidebar := widgets.Sidebar("Nova Gallery",
-		widgets.SidebarItem{Title: "Components", Icon: "🧩", Selected: true},
-		widgets.SidebarItem{Title: "Navigation", Icon: "🧭"},
-		widgets.SidebarItem{Title: "Feedback & Modals", Icon: "💬"},
-		widgets.SidebarItem{Title: "Data & Tables", Icon: "📊", Badge: "Fast"},
-		widgets.SidebarItem{Title: "Settings", Icon: "⚙️"},
+		widgets.SidebarItem{Title: "Components", Icon: "#", Selected: true},
+		widgets.SidebarItem{Title: "Navigation", Icon: "="},
+		widgets.SidebarItem{Title: "Feedback & Modals", Icon: "@"},
+		widgets.SidebarItem{Title: "Data & Tables", Icon: "$", Badge: "Fast"},
+		widgets.SidebarItem{Title: "Settings", Icon: "*"},
 	)
 
 	// Main tabbed content

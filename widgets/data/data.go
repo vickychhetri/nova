@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/vickychhetri/nova/core/color"
 	"github.com/vickychhetri/nova/core/geom"
 	"github.com/vickychhetri/nova/event"
 	"github.com/vickychhetri/nova/font"
@@ -164,22 +165,26 @@ func (tc *TableComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 		scroll = tc.ScrollOffset.Get()
 	}
 
-	headerH := 36.0
+	headerH := 32.0
 	bodyH := h - headerH
 
 	// Table border box
-	canvas.FillRoundedRect(geom.NewRect(0, 0, w, h), t.Radii.MD, t.Palette.Surface)
-	canvas.StrokeRoundedRect(geom.NewRect(0, 0, w, h), t.Radii.MD, t.Palette.Border, 1.0)
+	tableRect := geom.NewRect(0, 0, w, h)
+	canvas.FillRoundedRect(tableRect, t.Radii.SM, t.Palette.Surface)
+	canvas.StrokeRoundedRect(tableRect, t.Radii.SM, t.Palette.Border, 1.0)
 
-	// 1. Header Bar
+	// 1. Header Bar (Qt QHeaderView Style)
 	headerRect := geom.NewRect(0, 0, w, headerH)
-	canvas.FillRoundedRect(headerRect, geom.RadiusSeparate(8, 8, 0, 0), t.Palette.Secondary)
+	canvas.FillRoundedRect(headerRect, geom.RadiusSeparate(4, 4, 0, 0), t.Palette.Secondary)
 	canvas.DrawLine(geom.Pt(0, headerH), geom.Pt(w, headerH), t.Palette.Border, 1.0)
 
-	curX := 12.0
+	curX := 0.0
 	for _, col := range tc.Columns {
-		canvas.DrawText(col.Title, geom.Pt(curX, 10), 12, font.WeightBold, t.Palette.TextSecondary)
+		// Header text
+		canvas.DrawText(col.Title, geom.Pt(curX+10, 8), 12, font.WeightBold, t.Palette.TextPrimary)
 		curX += col.Width
+		// Header vertical separator line
+		canvas.DrawLine(geom.Pt(curX, 0), geom.Pt(curX, headerH), t.Palette.Border, 1.0)
 	}
 
 	// 2. Virtualized Body Rows
@@ -197,23 +202,30 @@ func (tc *TableComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 		rowY := float64(r)*tc.RowHeight - scroll
 		rowRect := geom.NewRect(0, rowY, w, tc.RowHeight)
 
-		// Row background
+		// Alternating Row background & selection
 		if r == selectedRow {
-			canvas.FillRect(rowRect, t.Palette.Primary.WithAlpha(0.2))
+			canvas.FillRect(rowRect, t.Palette.Primary)
 		} else if r%2 == 1 {
-			canvas.FillRect(rowRect, t.Palette.SurfaceHover.WithAlpha(0.5))
+			canvas.FillRect(rowRect, t.Palette.Background.WithAlpha(0.4))
 		}
 
-		// Divider line
-		canvas.DrawLine(geom.Pt(0, rowY+tc.RowHeight), geom.Pt(w, rowY+tc.RowHeight), t.Palette.Border.WithAlpha(0.3), 0.5)
+		// Horizontal row grid line
+		canvas.DrawLine(geom.Pt(0, rowY+tc.RowHeight), geom.Pt(w, rowY+tc.RowHeight), t.Palette.Border.WithAlpha(0.35), 0.5)
 
-		// Row cells
-		cellX := 12.0
+		// Cells & Vertical column grid lines
+		cellX := 0.0
 		for c, col := range tc.Columns {
 			val := tc.GetCell(r, c)
 			val = text.TruncateWithEllipsis(val, col.Width-16, 12, font.WeightRegular)
-			canvas.DrawText(val, geom.Pt(cellX, rowY+8), 12, font.WeightRegular, t.Palette.TextPrimary)
+			textCol := t.Palette.TextPrimary
+			if r == selectedRow {
+				textCol = color.White
+			}
+			canvas.DrawText(val, geom.Pt(cellX+10, rowY+7), 12, font.WeightRegular, textCol)
 			cellX += col.Width
+
+			// Vertical cell grid line
+			canvas.DrawLine(geom.Pt(cellX, rowY), geom.Pt(cellX, rowY+tc.RowHeight), t.Palette.Border.WithAlpha(0.25), 0.5)
 		}
 	}
 

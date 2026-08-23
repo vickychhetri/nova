@@ -13,6 +13,17 @@ import (
 	"github.com/vickychhetri/nova/theme"
 )
 
+// Insets and geometry helper re-exports
+var (
+	All            = geom.All
+	Symmetric      = geom.Symmetric
+	TRBL           = geom.TRBL
+	Pt             = geom.Pt
+	Sz             = geom.Sz
+	RadiusUniform  = geom.RadiusUniform
+	RadiusSeparate = geom.RadiusSeparate
+)
+
 // --- Flex Components (Column & Row) ---
 
 // FlexComponent implements a flexbox container (Column or Row).
@@ -333,6 +344,16 @@ func (c *ContainerComponent) Size(width, height float64) *ContainerComponent {
 	return c
 }
 
+func (c *ContainerComponent) WithWidth(w float64) *ContainerComponent {
+	c.Width = &w
+	return c
+}
+
+func (c *ContainerComponent) WithHeight(h float64) *ContainerComponent {
+	c.Height = &h
+	return c
+}
+
 func (c *ContainerComponent) Pad(insets geom.Insets) *ContainerComponent {
 	c.Padding = insets
 	return c
@@ -438,11 +459,12 @@ func (c *ContainerComponent) Paint(node *Node, canvas *render.Canvas) {
 
 type TextComponent struct {
 	BaseComponent
-	Content    string
-	Signal     state.Signal[string]
-	Color      color.Color
-	FontSize   float64
-	FontWeight int
+	Content        string
+	Signal         state.Signal[string]
+	Color          color.Color
+	hasCustomColor bool
+	FontSize       float64
+	FontWeight     int
 }
 
 // Text creates a text label with string or reactive state.
@@ -450,7 +472,6 @@ func Text(value any) *TextComponent {
 	tc := &TextComponent{
 		FontSize:   14,
 		FontWeight: font.WeightRegular,
-		Color:      color.White,
 	}
 
 	switch v := value.(type) {
@@ -481,6 +502,7 @@ func (t *TextComponent) Weight(w int) *TextComponent {
 
 func (t *TextComponent) Col(c color.Color) *TextComponent {
 	t.Color = c
+	t.hasCustomColor = true
 	return t
 }
 
@@ -498,7 +520,11 @@ func (t *TextComponent) Paint(node *Node, canvas *render.Canvas) {
 	if t.Signal != nil {
 		str = t.Signal.Get()
 	}
-	canvas.DrawText(str, geom.Pt(0, 0), t.FontSize, t.FontWeight, t.Color)
+	col := theme.Current().Palette.TextPrimary
+	if t.hasCustomColor {
+		col = t.Color
+	}
+	canvas.DrawText(str, geom.Pt(0, 0), t.FontSize, t.FontWeight, col)
 }
 
 // --- Button Component ---
@@ -506,6 +532,7 @@ func (t *TextComponent) Paint(node *Node, canvas *render.Canvas) {
 type ButtonComponent struct {
 	BaseComponent
 	Label       string
+	Icon        string
 	OnClickFunc func()
 	Variant     ButtonVariant
 	Child       Component
@@ -529,8 +556,18 @@ func Button(label string) *ButtonComponent {
 	}
 }
 
+func (b *ButtonComponent) WithIcon(icon string) *ButtonComponent {
+	b.Icon = icon
+	return b
+}
+
 func (b *ButtonComponent) OnClick(fn func()) *ButtonComponent {
 	b.OnClickFunc = fn
+	return b
+}
+
+func (b *ButtonComponent) Primary() *ButtonComponent {
+	b.Variant = ButtonPrimary
 	return b
 }
 
@@ -549,12 +586,25 @@ func (b *ButtonComponent) Outline() *ButtonComponent {
 	return b
 }
 
+func (b *ButtonComponent) Ghost() *ButtonComponent {
+	b.Variant = ButtonGhost
+	return b
+}
+
+func (b *ButtonComponent) displayText() string {
+	if b.Icon != "" {
+		return b.Icon + " " + b.Label
+	}
+	return b.Label
+}
+
 func (b *ButtonComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	node.OnClick = b.OnClickFunc
 
-	txtSz := text.MeasureText(b.Label, 14, font.WeightMedium)
+	txt := b.displayText()
+	txtSz := text.MeasureText(txt, 13, font.WeightMedium)
 	btnW := txtSz.Width + 24 // 12px padding each side
-	btnH := mathMax(36, txtSz.Height+14)
+	btnH := 34.0
 
 	return constraints.Constrain(geom.Sz(btnW, btnH))
 }
@@ -562,6 +612,7 @@ func (b *ButtonComponent) Layout(node *Node, constraints layout.BoxConstraints) 
 func (b *ButtonComponent) Paint(node *Node, canvas *render.Canvas) {
 	t := theme.Current()
 	rect := geom.NewRect(0, 0, node.Bounds.Width, node.Bounds.Height)
+	radius := geom.RadiusUniform(6)
 
 	bgCol := t.Palette.Primary
 	textCol := t.Palette.PrimaryText
@@ -571,32 +622,50 @@ func (b *ButtonComponent) Paint(node *Node, canvas *render.Canvas) {
 	case ButtonSecondary:
 		bgCol = t.Palette.Secondary
 		textCol = t.Palette.SecondaryText
+		borderCol = t.Palette.Border
+		if node.IsHovered {
+			bgCol = t.Palette.SecondaryHover
+			borderCol = t.Palette.BorderHover
+		}
 	case ButtonDanger:
 		bgCol = t.Palette.Error
 		textCol = color.White
+		if node.IsHovered {
+			bgCol = bgCol.Lighten(0.08)
+		}
 	case ButtonOutline:
 		bgCol = color.Transparent
 		textCol = t.Palette.Primary
-		borderCol = t.Palette.Primary
+		borderCol = t.Palette.Border
+		if node.IsHovered {
+			bgCol = t.Palette.Primary.WithAlpha(0.08)
+			borderCol = t.Palette.Primary
+		}
 	case ButtonGhost:
 		bgCol = color.Transparent
 		textCol = t.Palette.TextPrimary
+		if node.IsHovered {
+			bgCol = t.Palette.SurfaceHover
+		}
+	case ButtonPrimary:
+		if node.IsHovered {
+			bgCol = t.Palette.PrimaryHover
+		}
 	}
 
-	if node.IsHovered {
-		bgCol = bgCol.Lighten(0.1)
+	if bgCol.A > 0 {
+		canvas.FillRoundedRect(rect, radius, bgCol)
 	}
-
-	canvas.FillRoundedRect(rect, t.Radii.MD, bgCol)
 	if borderCol.A > 0 {
-		canvas.StrokeRoundedRect(rect, t.Radii.MD, borderCol, 1.5)
+		canvas.StrokeRoundedRect(rect, radius, borderCol, 1.0)
 	}
 
 	// Center text
-	txtSz := text.MeasureText(b.Label, 14, font.WeightMedium)
+	txt := b.displayText()
+	txtSz := text.MeasureText(txt, 13, font.WeightMedium)
 	tx := (node.Bounds.Width - txtSz.Width) / 2.0
 	ty := (node.Bounds.Height - txtSz.Height) / 2.0
-	canvas.DrawText(b.Label, geom.Pt(tx, ty), 14, font.WeightMedium, textCol)
+	canvas.DrawText(txt, geom.Pt(tx, ty), 13, font.WeightMedium, textCol)
 }
 
 func mathMax(a, b float64) float64 {

@@ -147,9 +147,26 @@ func (sc *SelectComponent) Bind(val *state.Value[string]) *SelectComponent {
 }
 
 func (sc *SelectComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
-	node.OnClick = func() {
-		if sc.IsOpen != nil {
-			sc.IsOpen.Set(!sc.IsOpen.Get())
+	node.OnPointerDown = func(e *event.PointerEvent) {
+		if e.Position.Y <= 40 {
+			if sc.IsOpen != nil {
+				sc.IsOpen.Set(!sc.IsOpen.Get())
+			}
+			return
+		}
+
+		if sc.IsOpen != nil && sc.IsOpen.Get() && e.Position.Y > 44 {
+			optIdx := int((e.Position.Y - 44.0) / 32.0)
+			if optIdx >= 0 && optIdx < len(sc.Options) {
+				chosen := sc.Options[optIdx].Value
+				if sc.Selected != nil {
+					sc.Selected.Set(chosen)
+				}
+				if sc.OnChanged != nil {
+					sc.OnChanged(chosen)
+				}
+				sc.IsOpen.Set(false)
+			}
 		}
 	}
 
@@ -190,7 +207,7 @@ func (sc *SelectComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 	canvas.DrawText(displayLabel, geom.Pt(12, 12), 14, font.WeightRegular, textCol)
 
 	// Down arrow indicator
-	canvas.DrawText("▾", geom.Pt(w-24, 10), 14, font.WeightBold, t.Palette.TextSecondary)
+	canvas.DrawText("v", geom.Pt(w-24, 12), 12, font.WeightBold, t.Palette.TextSecondary)
 
 	// Popup options menu if opened
 	if sc.IsOpen != nil && sc.IsOpen.Get() {
@@ -242,7 +259,7 @@ func (dp *DatePickerComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 	if dp.Value != nil && dp.Value.Get() != "" {
 		valStr = dp.Value.Get()
 	}
-	canvas.DrawText("📅 "+valStr, geom.Pt(12, 12), 14, font.WeightRegular, t.Palette.TextPrimary)
+	canvas.DrawText(valStr, geom.Pt(14, 12), 14, font.WeightRegular, t.Palette.TextPrimary)
 }
 
 type ColorPickerComponent struct {

@@ -1,0 +1,114 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 820] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 1907 >>
+stream
+q
+0.15 0.35 0.75 rg
+50 720 500 70 re f
+BT
+/F2 18 Tf
+1 1 1 rg
+65 762 Td (ACME GLOBAL TECHNOLOGIES CORP) Tj
+/F1 11 Tf
+0 -18 Td (Enterprise Payroll & Human Resources Division | Confidential Slip) Tj
+ET
+BT
+/F2 14 Tf
+0.1 0.1 0.15 rg
+50 690 Td (MONTHLY PAYSLIP - AUGUST 2026) Tj
+ET
+0.85 0.88 0.92 rg
+50 580 500 95 re f
+0.7 0.75 0.8 RG 1 w
+50 580 500 95 re S
+BT
+/F1 10 Tf
+0.2 0.2 0.25 rg
+65 655 Td (Employee Name: Alexander Wright) Tj
+0 -16 Td (Employee ID:   EMP-80429) Tj
+0 -16 Td (Department:    Engineering & Systems) Tj
+0 -16 Td (Designation:   Principal Software Architect) Tj
+320 655 Td (Pay Period:    August 2026) Tj
+0 -16 Td (Bank A/C:      CHASE-XXXX-9842) Tj
+0 -16 Td (Tax ID / PAN:  TAX-99420-US) Tj
+0 -16 Td (Working Days:  22 Days) Tj
+ET
+0.2 0.3 0.5 rg
+50 545 240 22 re f
+310 545 240 22 re f
+BT
+/F2 11 Tf
+1 1 1 rg
+60 552 Td (EARNINGS & ALLOWANCES) Tj
+320 552 Td (STATUTORY DEDUCTIONS) Tj
+ET
+BT
+/F1 10 Tf
+0.15 0.15 0.2 rg
+60 525 Td (Basic Salary:           $8500.00) Tj
+0 -18 Td (House Rent Allowance:   $2400.00) Tj
+0 -18 Td (Special Allowance:      $1600.00) Tj
+0 -18 Td (Performance Bonus:      $1200.00) Tj
+320 525 Td (Provident Fund / 401k:  $850.00) Tj
+0 -18 Td (Income Tax / TDS:        $1850.00) Tj
+0 -18 Td (Medical & Health Ins:    $350.00) Tj
+0 -18 Td (Professional Tax:        $150.00) Tj
+ET
+0.7 0.75 0.8 RG 1 w
+50 450 500 0 re S
+BT
+/F2 11 Tf
+0.1 0.1 0.15 rg
+60 432 Td (Gross Earnings: $13700.00) Tj
+320 432 Td (Total Deductions: $3200.00) Tj
+ET
+0.12 0.6 0.3 rg
+50 350 500 55 re f
+BT
+/F2 15 Tf
+1 1 1 rg
+65 382 Td (NET PAYABLE SALARY: $10500.00) Tj
+/F1 10 Tf
+0 -18 Td (Directly Credited to Registered Corporate Salary Account) Tj
+ET
+BT
+/F1 9 Tf
+0.45 0.45 0.5 rg
+65 240 Td (Employer Signature: _______________________) Tj
+330 240 Td (Employee Signature: _______________________) Tj
+50 160 Td (Generated on 23-Aug-2026 12:21 | System Generated Slip - No Physical Signature Required) Tj
+ET
+Q
+
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000068 00000 n 
+0000000120 00000 n 
+0000000240 00000 n 
+0000000320 00000 n 
+0000000400 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+2361
+%%EOF

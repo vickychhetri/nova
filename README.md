@@ -173,6 +173,9 @@ Inside `examples/`:
 - `examples/03_forms_showcase`: Complete form input suite with automated validation and dirty state tracking.
 - `examples/04_widget_gallery`: Comprehensive component library showcase.
 - `examples/05_novadb`: Production-quality database client showcase with 100,000-row virtualized table, SQL editor, and connection sidebar.
+- `examples/06_ip_scanner`: Concurrent multithreaded network discovery and port scanner with live telemetry.
+- `examples/07_payslip_generator`: Enterprise payroll payslip designer with pure-Go vector PDF generator.
+- `examples/08_vinfo`: Secure personal information vault & to-do manager with SQLite (`modernc.org/sqlite`), PIN lock authentication (`2212`), in-app PIN change settings, and custom V-Info branding.
 
 ---
 

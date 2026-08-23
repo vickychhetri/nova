@@ -312,16 +312,113 @@ func (r *Rasterizer) strokeRoundedRect(rect geom.Rect, radius geom.CornerRadius,
 	if col.A <= 0 || strokeWidth <= 0 {
 		return
 	}
-	// Approximate stroked rounded rect by filling outer and clipping inner
-	r.fillRoundedRect(rect, radius, col)
-	innerRect := rect.Inset(geom.All(strokeWidth))
-	innerRadius := geom.CornerRadius{
-		TopLeft:     math.Max(0, radius.TopLeft-strokeWidth),
-		TopRight:    math.Max(0, radius.TopRight-strokeWidth),
-		BottomRight: math.Max(0, radius.BottomRight-strokeWidth),
-		BottomLeft:  math.Max(0, radius.BottomLeft-strokeWidth),
+
+	bounds := r.rectToImageRect(rect).Intersect(r.currentClip())
+	if bounds.Empty() {
+		return
 	}
-	r.fillRoundedRect(innerRect, innerRadius, corecolor.Transparent)
+
+	rx0 := rect.X * r.scale
+	ry0 := rect.Y * r.scale
+	rx1 := (rect.X + rect.Width) * r.scale
+	ry1 := (rect.Y + rect.Height) * r.scale
+
+	sw := strokeWidth * r.scale
+
+	rtl := radius.TopLeft * r.scale
+	rtr := radius.TopRight * r.scale
+	rbr := radius.BottomRight * r.scale
+	rbl := radius.BottomLeft * r.scale
+
+	irx0 := rx0 + sw
+	iry0 := ry0 + sw
+	irx1 := rx1 - sw
+	iry1 := ry1 - sw
+
+	irtl := math.Max(0, rtl-sw)
+	irtr := math.Max(0, rtr-sw)
+	irbr := math.Max(0, rbr-sw)
+	irbl := math.Max(0, rbl-sw)
+
+	isInsideOuter := func(fx, fy float64) bool {
+		if fx < rx0 || fx > rx1 || fy < ry0 || fy > ry1 {
+			return false
+		}
+		if fx < rx0+rtl && fy < ry0+rtl {
+			dx := (rx0 + rtl) - fx
+			dy := (ry0 + rtl) - fy
+			if dx*dx+dy*dy > rtl*rtl {
+				return false
+			}
+		}
+		if fx > rx1-rtr && fy < ry0+rtr {
+			dx := fx - (rx1 - rtr)
+			dy := (ry0 + rtr) - fy
+			if dx*dx+dy*dy > rtr*rtr {
+				return false
+			}
+		}
+		if fx > rx1-rbr && fy > ry1-rbr {
+			dx := fx - (rx1 - rbr)
+			dy := fy - (ry1 - rbr)
+			if dx*dx+dy*dy > rbr*rbr {
+				return false
+			}
+		}
+		if fx < rx0+rbl && fy > ry1-rbl {
+			dx := (rx0 + rbl) - fx
+			dy := fy - (ry1 - rbl)
+			if dx*dx+dy*dy > rbl*rbl {
+				return false
+			}
+		}
+		return true
+	}
+
+	isInsideInner := func(fx, fy float64) bool {
+		if fx < irx0 || fx > irx1 || fy < iry0 || fy > iry1 {
+			return false
+		}
+		if fx < irx0+irtl && fy < iry0+irtl {
+			dx := (irx0 + irtl) - fx
+			dy := (iry0 + irtl) - fy
+			if dx*dx+dy*dy > irtl*irtl {
+				return false
+			}
+		}
+		if fx > irx1-irtr && fy < iry0+irtr {
+			dx := fx - (irx1 - irtr)
+			dy := (iry0 + irtr) - fy
+			if dx*dx+dy*dy > irtr*irtr {
+				return false
+			}
+		}
+		if fx > irx1-irbr && fy > iry1-irbr {
+			dx := fx - (irx1 - irbr)
+			dy := fy - (iry1 - irbr)
+			if dx*dx+dy*dy > irbr*irbr {
+				return false
+			}
+		}
+		if fx < irx0+irbl && fy > iry1-irbl {
+			dx := (irx0 + irbl) - fx
+			dy := fy - (iry1 - irbl)
+			if dx*dx+dy*dy > irbl*irbl {
+				return false
+			}
+		}
+		return true
+	}
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		fy := float64(y) + 0.5
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			fx := float64(x) + 0.5
+			if isInsideOuter(fx, fy) && !isInsideInner(fx, fy) {
+				r.blendPixel(x, y, col)
+			}
+		}
+	}
 }
 
 func (r *Rasterizer) fillCircle(center geom.Point, radius float64, col corecolor.Color) {
@@ -432,7 +529,7 @@ func (r *Rasterizer) drawText(text string, origin geom.Point, fontSize float64, 
 	}
 
 	curX := origin.X * r.scale
-	baselineY := origin.Y * r.scale
+	destY := int(math.Round(origin.Y * r.scale))
 	scaledFontSize := fontSize * r.scale
 
 	for _, rn := range text {
@@ -440,15 +537,17 @@ func (r *Rasterizer) drawText(text string, origin geom.Point, fontSize float64, 
 		if gm.Bitmap != nil {
 			bmpW := gm.Bitmap.Bounds().Dx()
 			bmpH := gm.Bitmap.Bounds().Dy()
-
-			destX := int(math.Round(curX + gm.BearingX*r.scale))
-			destY := int(math.Round(baselineY - gm.BearingY))
+			destX := int(math.Round(curX))
 
 			for gy := 0; gy < bmpH; gy++ {
 				for gx := 0; gx < bmpW; gx++ {
 					alphaVal := gm.Bitmap.AlphaAt(gx, gy).A
 					if alphaVal > 0 {
-						pixCol := col.MultiplyAlpha(float64(alphaVal) / 255.0)
+						aFactor := float64(alphaVal) / 255.0
+						if aFactor > 0.04 {
+							aFactor = math.Pow(aFactor, 0.72)
+						}
+						pixCol := col.MultiplyAlpha(aFactor)
 						r.blendPixel(destX+gx, destY+gy, pixCol)
 					}
 				}

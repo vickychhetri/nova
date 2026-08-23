@@ -51,11 +51,11 @@ func main() {
 
 	// 4. Build Left Sidebar Navigation
 	sidebar := widgets.Sidebar("Nova Desktop",
-		widgets.SidebarItem{Title: "Dashboard", Icon: "📊", Selected: true},
-		widgets.SidebarItem{Title: "Form Inputs", Icon: "📝", Badge: "12 inputs"},
-		widgets.SidebarItem{Title: "Data Explorer", Icon: "🗄️", Badge: "100K"},
-		widgets.SidebarItem{Title: "SQL Studio", Icon: "⚡"},
-		widgets.SidebarItem{Title: "Settings", Icon: "⚙️"},
+		widgets.SidebarItem{Title: "Dashboard", Icon: "#", Selected: true},
+		widgets.SidebarItem{Title: "Form Inputs", Icon: "=", Badge: "12 inputs"},
+		widgets.SidebarItem{Title: "Data Explorer", Icon: "$", Badge: "100K"},
+		widgets.SidebarItem{Title: "SQL Studio", Icon: ">", Badge: "SQL"},
+		widgets.SidebarItem{Title: "Settings", Icon: "*"},
 	)
 
 	// 5. Build Tab 1: Dashboard & Analytics Overview
