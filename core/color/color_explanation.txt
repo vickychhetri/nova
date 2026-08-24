@@ -1,0 +1,441 @@
+Nova Color Package Explanation
+==============================
+
+Purpose
+-------
+
+core/color/color.go defines Nova's color value and the conversion, adjustment,
+and accessibility helpers used throughout rendering and theming.
+
+The package represents colors with normalized float64 channels, then converts to
+8-bit formats only at output boundaries. This keeps color operations precise
+while allowing renderers to write standard image.RGBA or image/color values.
+
+The main responsibilities are:
+
+- Store RGBA colors in normalized form.
+- Construct colors from byte, float, hexadecimal, and HSL input.
+- Convert colors to Go's NRGBA and a packed uint32 representation.
+- Adjust alpha, brightness, and interpolation.
+- Calculate WCAG relative luminance and contrast.
+- Provide common palette constants.
+
+Color Representation
+--------------------
+
+Color contains four float64 channels:
+
+    type Color struct {
+        R float64
+        G float64
+        B float64
+        A float64
+    }
+
+R, G, and B represent red, green, and blue. A represents alpha, or opacity.
+The intended range for every channel is [0, 1]:
+
+- 0 means none of that channel or complete transparency for alpha.
+- 1 means full channel intensity or complete opacity for alpha.
+
+Normalized values make blending formulas straightforward and avoid repeated
+integer conversion during intermediate color operations. The final conversion
+to bytes happens in NRGBA or in renderer-specific pixel code.
+
+Color does not premultiply RGB by alpha. RGB and A remain independent channels.
+Renderers that need premultiplied alpha must perform that conversion explicitly
+at the compositing boundary.
+
+RGBA Constructor
+----------------
+
+RGBA creates a Color from four uint8 values in [0, 255]. Each channel is divided
+by 255:
+
+    normalized = byte / 255.0
+
+For example:
+
+    RGBA(255, 0, 128, 255)
+
+represents fully opaque red 1.0, green 0.0, blue approximately 0.502, and alpha
+1.0.
+
+Because the input type is uint8, values are already limited to the valid byte
+range. RGBA is appropriate when values come from image files, platform pixels,
+or other 8-bit APIs.
+
+RGB Constructor
+---------------
+
+RGB creates an opaque color from red, green, and blue bytes. It delegates to
+RGBA with alpha 255.
+
+    RGB(59, 130, 246)
+
+is equivalent to:
+
+    RGBA(59, 130, 246, 255)
+
+Use RGB for ordinary solid colors when no transparency is needed.
+
+FloatRGBA Constructor
+---------------------
+
+FloatRGBA creates a color from float64 channels and clamps each value to [0, 1]
+with clamp01. This is useful for calculations, gradients, procedural colors,
+and values already expressed in normalized space.
+
+For example:
+
+    FloatRGBA(1.2, 0.5, -0.1, 0.75)
+
+becomes approximately:
+
+    R = 1.0
+    G = 0.5
+    B = 0.0
+    A = 0.75
+
+Clamping prevents invalid channel values from escaping through this constructor.
+Methods that preserve or combine existing Color values may rely on those values
+already being normalized.
+
+Hex Parsing
+-----------
+
+Hex parses common CSS-style hexadecimal forms. A leading # is optional. The
+supported lengths are:
+
+- 3 digits: RGB, for example #F00.
+- 4 digits: RGBA, for example #F00F.
+- 6 digits: RRGGBB, for example #FF0000.
+- 8 digits: RRGGBBAA, for example #FF000088.
+
+Short forms duplicate each nibble. For #3BF:
+
+    3 -> 33
+    B -> BB
+    F -> FF
+
+Six- and eight-digit forms use two hexadecimal digits per channel. Eight-digit
+input places alpha last, matching RRGGBBAA rather than the ARGB ordering used by
+some other APIs.
+
+If the input has an unsupported length, the initial defaults remain in use:
+red, green, and blue are zero, while alpha is 255. Parse errors are ignored by
+the current implementation, so invalid digits leave the affected parsed value
+at the parse function's zero result. Callers that require strict validation
+should validate the string before calling Hex or a future error-returning parser
+should be introduced.
+
+Hex always returns through RGBA, so the result uses normalized float channels.
+
+HSL and HSLA
+------------
+
+HSL creates an opaque color from hue, saturation, and lightness. It delegates to
+HSLA with alpha 1.
+
+HSLA accepts:
+
+- h: hue in degrees, conceptually [0, 360).
+- s: saturation in [0, 1].
+- l: lightness in [0, 1].
+- a: alpha in [0, 1].
+
+Hue wraps with modulo 360. Negative hue values are moved into the positive
+range. Saturation, lightness, and alpha are clamped.
+
+The conversion uses the standard HSL intermediate values:
+
+    C = (1 - |2L - 1|)S
+    X = C(1 - |(H/60 mod 2) - 1|)
+    m = L - C/2
+
+Depending on the hue sector, C, X, and zero are assigned to the temporary RGB
+channels. The match value m is then added to each channel.
+
+Hue sectors are:
+
+- [0, 60): red to yellow.
+- [60, 120): yellow to green.
+- [120, 180): green to cyan.
+- [180, 240): cyan to blue.
+- [240, 300): blue to magenta.
+- [300, 360): magenta to red.
+
+When saturation is zero, all RGB channels become the same value and the result
+is gray at the requested lightness.
+
+Byte Conversion with NRGBA
+--------------------------
+
+NRGBA converts normalized channels to Go's image/color.NRGBA type. Each channel
+is multiplied by 255 and rounded:
+
+    byteChannel = round(normalizedChannel * 255)
+
+NRGBA is non-premultiplied. RGB remains independent of alpha, which matches the
+Color representation and is suitable for APIs expecting image/color.Color.
+
+The method name is NRGBA, matching Go's standard type. It should not be confused
+with a premultiplied RGBA representation.
+
+Packed RGBAUint32
+-----------------
+
+RGBAUint32 packs rounded channels into a uint32 with the layout:
+
+    0xRRGGBBAA
+
+The packing operation is:
+
+    (R << 24) | (G << 16) | (B << 8) | A
+
+This is a numeric layout, not necessarily the byte order in memory on every
+machine. Code that writes the value directly to a byte buffer should account for
+endianness and the destination format.
+
+The channels are not explicitly clamped in RGBAUint32. Normal Color values are
+expected to be normalized; callers holding manually constructed out-of-range
+Color values should normalize them before packing.
+
+Alpha Operations
+----------------
+
+WithAlpha returns a copy with the supplied alpha clamped to [0, 1]. RGB is
+unchanged. It is useful when an effect needs a specific opacity:
+
+    faded := color.Blue.WithAlpha(0.5)
+
+MultiplyAlpha returns a copy whose alpha is multiplied by factor and clamped.
+RGB remains unchanged:
+
+    faded := color.Blue.MultiplyAlpha(0.5)
+
+These methods do not premultiply or dim RGB. A renderer applies the alpha during
+compositing. Keeping RGB unchanged also allows a cached color to be reused for
+multiple opacity levels.
+
+Lighten
+-------
+
+Lighten moves every RGB channel toward white by amount:
+
+    channel' = channel + (1 - channel) * amount
+
+Alpha is preserved. Amount 0 leaves the channel unchanged, while amount 1 moves
+it to white. The resulting channel is clamped through clamp01.
+
+Lighten operates in the package's stored RGB space. It is not a perceptual HSL
+lightness adjustment and does not perform a linear-light conversion first.
+
+Darken
+------
+
+Darken scales every RGB channel toward black:
+
+    channel' = channel * (1 - amount)
+
+Alpha is preserved. Amount 0 leaves the color unchanged, while amount 1 makes
+all RGB channels black. The resulting channels are clamped through clamp01.
+
+Like Lighten, Darken operates directly on the stored RGB channels rather than a
+perceptual color space.
+
+Interpolation with Lerp
+-----------------------
+
+Lerp linearly interpolates this Color toward another Color by factor t. All four
+channels, including alpha, are interpolated:
+
+    result = start + (end - start) * t
+
+The factor t is clamped to [0, 1]. Therefore:
+
+- t = 0 returns the starting color.
+- t = 1 returns the other color.
+- Intermediate values create a channel-by-channel blend.
+
+Lerp is useful for animations, gradients, hover transitions, and theme changes.
+It is a direct channel interpolation, not gamma-correct or perceptually uniform
+interpolation.
+
+Luminance
+---------
+
+Luminance returns relative sRGB luminance according to WCAG 2.1. Alpha is
+ignored, so the value describes the RGB color itself rather than a color
+composited over a background.
+
+Each sRGB channel is first converted into linear-light space by srgbToLinear.
+The linear channels are weighted according to human visual sensitivity:
+
+    L = 0.2126R + 0.7152G + 0.0722B
+
+Green receives the largest coefficient because the eye is most sensitive to its
+contribution in this model. Blue receives the smallest.
+
+The result is generally in [0, 1] for normalized channels. Accurate WCAG
+contrast calculations require this linear conversion; directly weighting the
+stored sRGB values would produce incorrect results.
+
+sRGB Transfer Function
+----------------------
+
+srgbToLinear uses the standard piecewise sRGB transfer function:
+
+    v / 12.92                         if v <= 0.04045
+    ((v + 0.055) / 1.055) ^ 2.4       otherwise
+
+The lower branch handles the near-black linear segment. The higher branch
+converts encoded sRGB intensity into linear-light intensity.
+
+ContrastRatio
+-------------
+
+ContrastRatio calculates relative contrast between two colors:
+
+    (lighter + 0.05) / (darker + 0.05)
+
+where lighter is the larger luminance and darker is the smaller. The theoretical
+range is 1 for identical luminance through 21 for black versus white.
+
+Alpha is ignored. If a foreground color is translucent, callers should first
+composite it over the intended background and calculate contrast using the
+resulting visible color.
+
+WCAG commonly recommends a ratio of at least 4.5:1 for normal body text and
+3:1 for large text, though the appropriate threshold depends on the interface
+and accessibility requirements.
+
+HexString and String
+--------------------
+
+HexString converts the Color to uppercase hexadecimal text. Opaque colors use:
+
+    #RRGGBB
+
+Colors whose alpha is below approximately 1 use:
+
+    #RRGGBBAA
+
+Channels are multiplied by 255 and rounded before formatting. The alpha
+threshold is 0.999 rather than an exact comparison with 1, so values extremely
+close to opaque use the compact six-digit form.
+
+String delegates to HexString, allowing Color to satisfy fmt.Stringer and to
+appear in logs, formatting, and debugging output as a readable hex value.
+
+Clamping
+--------
+
+clamp01 restricts a value to the closed interval [0, 1]:
+
+- Values below zero become zero.
+- Values above one become one.
+- Values inside the interval remain unchanged.
+
+It is used by FloatRGBA, HSLA, alpha operations, and brightness operations. It
+is not automatically applied to every field access, so callers should prefer
+constructors and methods over manually creating invalid Color values.
+
+Common Palette
+--------------
+
+The package exports common colors for UI and example code:
+
+- Transparent.
+- Black and White.
+- Red, Green, Blue, Yellow, Cyan, and Magenta.
+- Gray50 through Gray950.
+
+The vivid colors use a modern UI-oriented palette rather than the maximum
+primary byte values. Gray constants progress from very light Gray50 to very
+dark Gray950 and are created with Hex.
+
+These are package-level Color values. Color contains only scalar fields, so
+reading and copying them is inexpensive. Callers should treat the shared values
+as constants and create modified copies with methods such as WithAlpha,
+Lighten, or Darken.
+
+Memory and Concurrency
+----------------------
+
+Color values are plain value types with no internal mutable state. Copying a
+Color copies its four channels. The package-level palette values can be read
+concurrently.
+
+The helper functions also do not maintain mutable caches or global rendering
+state. They are safe to call concurrently as long as callers do not concurrently
+mutate a shared Color variable themselves.
+
+Validation and Invalid Input
+----------------------------
+
+The current API favors convenient value-returning functions over error returns:
+
+- RGBA accepts only valid uint8 channels by type.
+- FloatRGBA and HSLA clamp normalized values.
+- Hex ignores parse errors and returns a default/fallback-like color.
+- Color methods assume manually constructed channels are sensible.
+- ContrastRatio and Luminance do not inspect alpha.
+
+Applications needing strict user-input validation should validate hexadecimal
+strings and numeric ranges before constructing colors, or add an error-returning
+API alongside the convenient helpers.
+
+Testing Guidance
+----------------
+
+Useful tests for this package include:
+
+- Byte constructors map 0 and 255 to 0 and 1.
+- FloatRGBA clamps every channel independently.
+- RGB always returns alpha 1.
+- Hex supports all four documented lengths and optional #.
+- Hex short digits duplicate correctly.
+- HSL hue wraps for values below zero and above 360.
+- HSLA clamps saturation, lightness, and alpha.
+- NRGBA rounds expected byte values.
+- RGBAUint32 uses RRGGBBAA numeric packing.
+- WithAlpha replaces only alpha.
+- MultiplyAlpha scales and clamps alpha.
+- Lighten and Darken preserve alpha.
+- Lerp clamps its factor and interpolates alpha.
+- Luminance and contrast match WCAG reference values.
+- HexString omits alpha for opaque colors and includes it for translucent ones.
+- Shared palette values remain stable.
+
+Tests should also make the current invalid-hex behavior explicit if that behavior
+is part of the public compatibility contract.
+
+Maintenance Checklist
+---------------------
+
+When changing color.go:
+
+1. Keep normalized channel assumptions clear.
+2. Clamp user-facing float constructors and factors consistently.
+3. Preserve the documented hexadecimal channel order.
+4. Keep byte conversion rounding behavior stable unless intentionally changed.
+5. Distinguish non-premultiplied Color/NRGBA from renderer premultiplication.
+6. Preserve alpha semantics in color adjustment methods.
+7. Use linear-light conversion for WCAG luminance.
+8. Document whether new operations are RGB, HSL, or linear-light based.
+9. Add tests for edge values, especially zero, one, and out-of-range input.
+10. Treat shared palette values as read-only values.
+
+Summary
+-------
+
+Nova's Color type stores RGBA channels as normalized float64 values for precise
+intermediate work. Constructors cover byte, float, hexadecimal, and HSL input;
+methods cover output conversion, alpha adjustment, brightness, interpolation,
+and accessibility calculations.
+
+The package intentionally keeps color values independent from rendering
+backends. It provides the mathematical and representation layer, while
+renderers decide how colors are blended into pixels and how alpha interacts with
+background content.

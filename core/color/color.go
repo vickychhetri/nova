@@ -8,15 +8,22 @@ import (
 	"strings"
 )
 
-// Color represents an RGBA color where components are 0.0 to 1.0 (float64) for high-precision blending.
+// Color represents an RGBA color with normalized float64 components in the
+// range 0.0 to 1.0.
+//
+// Keeping channels normalized provides precision for blending and color
+// manipulation. Constructors clamp floating-point inputs where documented;
+// methods that operate directly on an existing Color preserve its RGB values
+// unless they explicitly modify them.
 type Color struct {
-	R float64 // Red [0..1]
-	G float64 // Green [0..1]
-	B float64 // Blue [0..1]
-	A float64 // Alpha [0..1]
+	R float64 // Red channel [0..1].
+	G float64 // Green channel [0..1].
+	B float64 // Blue channel [0..1].
+	A float64 // Alpha channel [0..1], where 0 is transparent and 1 opaque.
 }
 
-// RGBA creates a Color from 0..255 integer components.
+// RGBA creates a Color from 8-bit red, green, blue, and alpha components.
+// Each channel is divided by 255 to produce the normalized representation.
 func RGBA(r, g, b, a uint8) Color {
 	return Color{
 		R: float64(r) / 255.0,
@@ -26,12 +33,13 @@ func RGBA(r, g, b, a uint8) Color {
 	}
 }
 
-// RGB creates an opaque Color from 0..255 integer components.
+// RGB creates an opaque Color from 8-bit red, green, and blue components.
 func RGB(r, g, b uint8) Color {
 	return RGBA(r, g, b, 255)
 }
 
-// FloatRGBA creates a Color from 0.0..1.0 float components.
+// FloatRGBA creates a Color from normalized floating-point components.
+// Values outside [0, 1] are clamped independently for each channel.
 func FloatRGBA(r, g, b, a float64) Color {
 	return Color{
 		R: clamp01(r),
@@ -41,7 +49,11 @@ func FloatRGBA(r, g, b, a float64) Color {
 	}
 }
 
-// Hex creates a Color from a hex string (e.g. "#FFF", "#3B82F6", "#3B82F6AA").
+// Hex creates a Color from a hexadecimal string.
+//
+// Supported forms are RGB (#RGB), RGBA (#RGBA), RRGGBB (#RRGGBB), and RRGGBBAA
+// (#RRGGBBAA). A leading # is optional. Invalid lengths or digits silently
+// leave the affected parsed channels at their current defaults.
 func Hex(hex string) Color {
 	hex = strings.TrimPrefix(hex, "#")
 	var r, g, b, a uint64 = 0, 0, 0, 255
@@ -70,12 +82,17 @@ func Hex(hex string) Color {
 	return RGBA(uint8(r), uint8(g), uint8(b), uint8(a))
 }
 
-// HSL creates a Color from Hue [0..360), Saturation [0..1], Lightness [0..1].
+// HSL creates an opaque Color from hue in degrees, saturation in [0, 1], and
+// lightness in [0, 1]. Hue wraps around the color wheel.
 func HSL(h, s, l float64) Color {
 	return HSLA(h, s, l, 1.0)
 }
 
-// HSLA creates a Color from Hue [0..360), Saturation [0..1], Lightness [0..1], Alpha [0..1].
+// HSLA creates a Color from HSL components and normalized alpha.
+//
+// Hue is normalized into [0, 360), while saturation, lightness, and alpha are
+// clamped to [0, 1]. The conversion uses the standard chroma/intermediate/match
+// formulation and returns normalized RGB channels.
 func HSLA(h, s, l, a float64) Color {
 	h = math.Mod(h, 360)
 	if h < 0 {
@@ -113,7 +130,8 @@ func HSLA(h, s, l, a float64) Color {
 	}
 }
 
-// NRBA returns standard Go color.NRGBA.
+// NRGBA converts the normalized color to Go's 8-bit non-premultiplied NRGBA.
+// Channels are rounded to the nearest byte.
 func (c Color) NRGBA() color.NRGBA {
 	return color.NRGBA{
 		R: uint8(math.Round(c.R * 255)),
@@ -123,7 +141,7 @@ func (c Color) NRGBA() color.NRGBA {
 	}
 }
 
-// RGBAUint32 packs color into 0xRRGGBBAA uint32.
+// RGBAUint32 packs rounded channels into a 0xRRGGBBAA uint32 value.
 func (c Color) RGBAUint32() uint32 {
 	r := uint32(math.Round(c.R * 255))
 	g := uint32(math.Round(c.G * 255))
@@ -132,17 +150,22 @@ func (c Color) RGBAUint32() uint32 {
 	return (r << 24) | (g << 16) | (b << 8) | a
 }
 
-// WithAlpha returns a copy with the given alpha value.
+// WithAlpha returns a copy with alpha replaced by the clamped value.
+// The RGB channels are unchanged.
 func (c Color) WithAlpha(alpha float64) Color {
 	return Color{R: c.R, G: c.G, B: c.B, A: clamp01(alpha)}
 }
 
-// MultiplyAlpha multiplies the existing alpha by factor.
+// MultiplyAlpha returns a copy whose alpha is multiplied by factor and then
+// clamped. RGB channels are unchanged, which is useful for glyph coverage and
+// translucent effects.
 func (c Color) MultiplyAlpha(factor float64) Color {
 	return Color{R: c.R, G: c.G, B: c.B, A: clamp01(c.A * factor)}
 }
 
-// Lighten lightens the color by amount (0..1).
+// Lighten moves each RGB channel toward white by amount and preserves alpha.
+// Amount is expected in [0, 1]; values outside that range are clamped through
+// the resulting channels.
 func (c Color) Lighten(amount float64) Color {
 	return Color{
 		R: clamp01(c.R + (1.0-c.R)*amount),
@@ -152,7 +175,7 @@ func (c Color) Lighten(amount float64) Color {
 	}
 }
 
-// Darken darkens the color by amount (0..1).
+// Darken scales each RGB channel toward black by amount and preserves alpha.
 func (c Color) Darken(amount float64) Color {
 	return Color{
 		R: clamp01(c.R * (1.0 - amount)),
@@ -162,7 +185,8 @@ func (c Color) Darken(amount float64) Color {
 	}
 }
 
-// Lerp linearly interpolates between this color and other by factor t [0..1].
+// Lerp linearly interpolates all four channels toward other by t. The factor
+// is clamped to [0, 1], so t=0 returns c and t=1 returns other.
 func (c Color) Lerp(other Color, t float64) Color {
 	t = clamp01(t)
 	return Color{
@@ -173,7 +197,8 @@ func (c Color) Lerp(other Color, t float64) Color {
 	}
 }
 
-// Luminance returns relative luminance per WCAG 2.1.
+// Luminance returns relative sRGB luminance according to WCAG 2.1.
+// Alpha is ignored; luminance describes the RGB color itself.
 func (c Color) Luminance() float64 {
 	r := srgbToLinear(c.R)
 	g := srgbToLinear(c.G)
@@ -181,7 +206,8 @@ func (c Color) Luminance() float64 {
 	return 0.2126*r + 0.7152*g + 0.0722*b
 }
 
-// ContrastRatio calculates contrast ratio against another color (1.0 to 21.0).
+// ContrastRatio calculates the WCAG contrast ratio against another RGB color.
+// The theoretical result ranges from 1 to 21, and alpha is ignored.
 func (c Color) ContrastRatio(other Color) float64 {
 	l1 := c.Luminance()
 	l2 := other.Luminance()
@@ -190,7 +216,9 @@ func (c Color) ContrastRatio(other Color) float64 {
 	return (lighter + 0.05) / (darker + 0.05)
 }
 
-// HexString returns hex string e.g. "#3B82F6".
+// HexString returns an uppercase hexadecimal representation.
+// Opaque colors use #RRGGBB; colors with alpha below approximately 1 use
+// #RRGGBBAA. Channels are rounded to bytes before formatting.
 func (c Color) HexString() string {
 	r := int(math.Round(c.R * 255))
 	g := int(math.Round(c.G * 255))
@@ -203,9 +231,12 @@ func (c Color) HexString() string {
 }
 
 func (c Color) String() string {
+	// String follows the compact hex representation used by HexString.
 	return c.HexString()
 }
 
+// clamp01 restricts a normalized channel or factor to the closed interval
+// [0, 1].
 func clamp01(v float64) float64 {
 	if v < 0 {
 		return 0
@@ -216,6 +247,8 @@ func clamp01(v float64) float64 {
 	return v
 }
 
+// srgbToLinear converts an sRGB channel into linear-light space for luminance
+// calculations. The piecewise transfer function is defined by WCAG/sRGB.
 func srgbToLinear(v float64) float64 {
 	if v <= 0.04045 {
 		return v / 12.92
@@ -223,7 +256,7 @@ func srgbToLinear(v float64) float64 {
 	return math.Pow((v+0.055)/1.055, 2.4)
 }
 
-// Common color constants
+// Common color constants used throughout Nova's themes and examples.
 var (
 	Transparent = FloatRGBA(0, 0, 0, 0)
 	Black       = RGB(0, 0, 0)
