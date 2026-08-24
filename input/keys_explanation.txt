@@ -1,0 +1,377 @@
+Nova Input Keys Explanation
+===========================
+
+Purpose
+-------
+
+input/keys.go defines Nova's normalized keyboard, modifier, and pointer-button
+values. Platform backends translate native input codes into these shared values
+so widgets and application code do not need to know whether input came from
+X11, Wayland, another desktop API, or a test source.
+
+The file defines three related concepts:
+
+- Key: one physical or virtual keyboard key.
+- Modifiers: a bitmask containing zero or more active modifier keys.
+- MouseButton: one normalized pointer button.
+
+These types are data contracts. They do not read devices, dispatch events, or
+implement widget behavior.
+
+Key Type
+--------
+
+Key is an integer-based enum:
+
+    type Key int
+
+The zero value is KeyUnknown. Named constants provide stable symbolic values for
+special keys, letters, digits, and function keys.
+
+Using named values instead of raw platform codes gives consumers readable and
+portable conditions:
+
+    if key == input.KeyEnter {
+        submitForm()
+    }
+
+Code should compare against the named constants rather than depending on the
+underlying integer values. The numeric sequence is generated with iota and is
+an implementation detail unless a separate serialization contract explicitly
+requires those numbers.
+
+KeyUnknown
+----------
+
+KeyUnknown represents a key that a backend could not map to Nova's known key
+set. Consumers should decide whether to ignore it, use the accompanying text
+character if available, or handle it through an application-specific path.
+
+Unknown does not necessarily mean that the physical key produced no useful
+input. A key event may still carry a Rune or modifier state in the surrounding
+event.Event value.
+
+Special Keys
+------------
+
+The special-key constants are:
+
+- KeyEscape: Escape.
+- KeyEnter: Return or Enter.
+- KeyTab: Tab.
+- KeyBackspace: Backspace.
+- KeySpace: Space.
+- KeyDelete: Delete.
+- KeyArrowUp: Up Arrow.
+- KeyArrowDown: Down Arrow.
+- KeyArrowLeft: Left Arrow.
+- KeyArrowRight: Right Arrow.
+- KeyHome: Home.
+- KeyEnd: End.
+- KeyPageUp: Page Up.
+- KeyPageDown: Page Down.
+
+These values describe key identity rather than text output. For example,
+KeyArrowLeft is useful for caret movement, navigation, or game controls even
+though it does not represent a printable character.
+
+Alphabetic Keys
+---------------
+
+KeyA through KeyZ represent alphabetic keyboard keys. The constants allow code
+to handle key identity without comparing Rune values:
+
+    if key == input.KeyA {
+        moveLeft()
+    }
+
+A backend may normalize lowercase and uppercase physical key input to the same
+alphabetic Key value while exposing Shift separately through Modifiers. This
+keeps key identity and modifier state independent.
+
+The input package itself does not convert runes or native codes. That mapping is
+the responsibility of the platform event adapter.
+
+Digit Keys
+----------
+
+Key0 through Key9 represent the numeric digit keys. They describe the key
+identity independently from whether Shift, Num Lock, or another modifier changes
+the produced character.
+
+Consumers that need text should inspect the event's Rune as well as Key. For
+example, a digit key with Shift may produce a symbol depending on keyboard
+layout, while the normalized key may still identify the physical digit key.
+
+Function Keys
+-------------
+
+KeyF1 through KeyF12 represent the standard function-key range. They are useful
+for commands, debugging shortcuts, menus, and game controls.
+
+Function keys generally have no printable Rune. Code should use Key to identify
+them and should not require a nonzero character value.
+
+Adding Keys
+-----------
+
+When a new key is needed:
+
+1. Add a named constant in the appropriate category.
+2. Update platform backends that translate native codes.
+3. Update any key-name or shortcut handling code.
+4. Add tests for the backend mapping and consumer behavior.
+5. Keep existing constant values stable if they are serialized or persisted.
+6. Document whether the new key is physical, logical, or text-oriented.
+
+Avoid reordering existing iota constants casually. Although Go code should use
+symbolic names, numeric values may be stored in logs, settings, or external
+integrations.
+
+Modifiers Type
+--------------
+
+Modifiers is an integer bitmask:
+
+    type Modifiers int
+
+Each modifier occupies one bit, allowing multiple active modifiers to be stored
+in one value. The constants are:
+
+- ModShift: Shift.
+- ModCtrl: Control.
+- ModAlt: Alt.
+- ModMeta: Meta, Command, or Super.
+
+The values are generated with powers of two using 1 << iota:
+
+    ModShift = 1
+    ModCtrl  = 2
+    ModAlt   = 4
+    ModMeta  = 8
+
+The exact integer values should normally remain hidden behind the named
+constants. Their bit layout is important because it permits combination and
+membership tests.
+
+Combining Modifiers
+-------------------
+
+Use bitwise OR to represent simultaneous modifiers:
+
+    mods := input.ModCtrl | input.ModShift
+
+The resulting value means both Control and Shift are active. A value with no
+active modifiers is zero:
+
+    var mods input.Modifiers
+
+Do not use addition as the primary way to combine flags. OR expresses the intent
+and remains correct when values are reused as bit flags.
+
+Testing Modifiers with Has
+--------------------------
+
+Has reports whether every bit in the supplied flag is present:
+
+    if mods.Has(input.ModCtrl) {
+        // Control is active.
+    }
+
+With a combined flag, Has checks the complete combination:
+
+    if mods.Has(input.ModCtrl | input.ModShift) {
+        // Both Control and Shift are active.
+    }
+
+The implementation is equivalent to:
+
+    (mods & flag) != 0
+
+This means a combined flag returns true when at least one requested bit is
+present, not necessarily all bits. For strict all-bits checking, a caller can
+use:
+
+    mods&flag == flag
+
+That distinction matters when testing combinations. For a single modifier, the
+current Has implementation behaves exactly as expected. For a multi-bit flag,
+callers should use the strict expression above when partial matches are not
+acceptable.
+
+Has with Zero
+-------------
+
+Has(0) returns false because the implementation checks whether the masked
+value is nonzero. This is usually the useful behavior for a query about active
+modifiers: zero does not represent a specific modifier.
+
+Callers should pass a named nonzero modifier or explicitly handle zero when
+building generic flag utilities.
+
+Clearing Modifiers
+------------------
+
+To remove a modifier from a bitmask, use bit clear:
+
+    mods &^= input.ModShift
+
+To remove a group:
+
+    mods &^= input.ModCtrl | input.ModAlt
+
+To toggle a modifier, use XOR:
+
+    mods ^= input.ModAlt
+
+These operations are normally performed by an input backend while tracking
+physical key state. Event consumers generally receive the final modifier value
+and only inspect it.
+
+MouseButton Type
+----------------
+
+MouseButton is an integer-based enum for normalized pointer buttons:
+
+- ButtonNone: no button or an unsupported button.
+- ButtonLeft: primary or left button.
+- ButtonRight: secondary or right button.
+- ButtonMiddle: middle button.
+
+Backends convert their native button identifiers into these values. For example,
+X11 uses numeric button identifiers, but a widget should compare against
+ButtonLeft rather than an X11-specific number.
+
+ButtonNone is useful for pointer movement, hover state, or an event where no
+button is actively involved. Unsupported extra buttons may be mapped to
+ButtonNone or handled through a future extension, depending on backend policy.
+
+Relationship to Events
+----------------------
+
+The input values are commonly carried by event.KeyEvent and event.PointerEvent.
+A key event can contain:
+
+- Key for normalized key identity.
+- Rune for associated text when available.
+- Modifiers for active modifier state.
+
+A pointer event can contain:
+
+- Position for pointer coordinates.
+- MouseButton for the affected button.
+- Modifiers for active modifier state.
+
+Key and Rune are intentionally separate. Key is appropriate for commands such
+as arrows, Escape, and function keys. Rune is appropriate when a text control
+needs the character produced by the keyboard layout.
+
+Backend Translation
+-------------------
+
+A platform input adapter normally performs this sequence:
+
+1. Receive a native keyboard or pointer event.
+2. Read the native key code, character, button, and modifier state.
+3. Map native key identity to input.Key.
+4. Map native button identity to input.MouseButton.
+5. Build input.Modifiers from active modifier flags.
+6. Construct a Nova event value.
+7. Dispatch it to the UI or application.
+8. Stop propagation when a handler consumes it.
+
+The input package owns the normalized vocabulary. The platform adapter owns the
+mapping from native values and keyboard layouts.
+
+Physical versus Logical Keys
+----------------------------
+
+The Key documentation allows both physical and virtual keyboard keys. A
+physical interpretation identifies a location or hardware key, while a logical
+interpretation identifies the resulting key meaning. The current constants are
+mostly semantic names such as KeyA, KeyEnter, and KeyArrowLeft.
+
+When adding layout-sensitive behavior, decide whether the backend should report
+physical position, logical key meaning, or both. A single Key value cannot always
+represent both concepts for international keyboard layouts.
+
+Text Input Considerations
+-------------------------
+
+Key values are not a complete text-input system. Text controls may need to
+handle composed characters, dead keys, input methods, or Unicode sequences that
+cannot be represented by one Key constant or one Rune.
+
+Use Key for navigation and editing commands. Use Rune or a higher-level text
+input event for character insertion. Do not assume that every KeyPress maps to
+one final user-visible character.
+
+Zero Values
+-----------
+
+The zero values are defined and predictable:
+
+- Key zero is KeyUnknown.
+- Modifiers zero means no active modifiers.
+- MouseButton zero is ButtonNone.
+
+These defaults are useful when an input source has incomplete information, but
+they may also indicate an uninitialized event. Producers should populate all
+fields that are meaningful for the event being created.
+
+Concurrency
+-----------
+
+Key, Modifiers, and MouseButton are value types and contain no internal shared
+state. They can be copied safely as values.
+
+A shared variable tracking current modifier state still requires synchronization
+if it is accessed by multiple goroutines. The types themselves do not provide
+atomic updates or event ordering.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- Every named key has the expected symbolic identity.
+- Unknown native keys map to KeyUnknown.
+- Modifier constants can be combined with OR.
+- Has detects a single active modifier.
+- Combined modifier checks use the intended partial or strict semantics.
+- Has(0) follows its documented behavior.
+- Button values map correctly from platform input.
+- Zero values represent unknown/no-modifier/no-button states.
+- Key and Rune remain independent in keyboard events.
+- Backend mappings stay stable when adding new keys.
+
+Tests for the constants can remain small. More important integration tests belong
+near the platform adapters and event dispatcher, where native conversion and
+propagation behavior are exercised together.
+
+Maintenance Checklist
+---------------------
+
+When changing keys.go:
+
+1. Preserve existing enum values when compatibility matters.
+2. Keep modifier values as distinct powers of two.
+3. Document any new key category or button.
+4. Update native backend mappings.
+5. Clarify physical versus logical meaning.
+6. Keep text handling separate from command-key handling.
+7. Review Has behavior for single and combined flags.
+8. Add tests for new normalization paths.
+9. Update event and shortcut documentation when semantics change.
+
+Summary
+-------
+
+input/keys.go provides the portable vocabulary used by Nova input events. Key
+identifies keyboard operations, Modifiers packs simultaneous modifier state into
+a bitmask, and MouseButton identifies common pointer buttons.
+
+The types are intentionally small and backend-neutral. Their value comes from
+stable names and clear translation boundaries: native platforms convert their
+own codes into these values, while application and widget code consumes the
+normalized results without depending on platform details.
