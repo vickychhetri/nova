@@ -1,0 +1,23 @@
+Form State and Validation Explanation
+======================================
+
+widgets/forms/form.go defines reusable validation rules and form state helpers.
+ValidationRule accepts any field value and returns an empty string when valid or
+an error message when invalid.
+
+Required rejects nil and blank strings, using a caller message when provided.
+MinLength and MaxLength validate string lengths. Email checks a conventional
+email pattern. Rules are composable and form validation decides how multiple
+errors are stored or presented.
+
+Form state registers fields, stores values, validates individual fields or the
+whole form, and exposes errors. Values should be updated through the form API so
+validation and error state remain coordinated.
+
+Validation is intentionally separate from rendering. Input widgets can call
+field validation and display returned messages, while application code remains
+free to define submission policy.
+
+Testing should cover nil values, whitespace, custom messages, boundary lengths,
+email forms, field registration, ValidateField, ValidateAll, Set, Errors, and
+successful clearing of errors.

@@ -1,5 +1,8 @@
 package forms
 
+// Checkbox, radio, and switch controls provide boolean and mutually exclusive
+// selection inputs backed by reactive state values.
+
 import (
 	"github.com/vickychhetri/nova/core/color"
 	"github.com/vickychhetri/nova/core/geom"

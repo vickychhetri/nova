@@ -1,5 +1,8 @@
 package feedback
 
+// Package feedback provides alerts, dialogs, toast notifications, and command
+// palette widgets.
+
 import (
 	"github.com/vickychhetri/nova/core/color"
 	"github.com/vickychhetri/nova/core/geom"

@@ -1,0 +1,66 @@
+Navigation Widgets Explanation
+==============================
+
+widgets/nav/nav.go provides navigation and application-structure components:
+tabs, sidebars, split panes, breadcrumbs, menus, menu bars, toolbars, and status
+bars.
+
+Tabs
+----
+
+TabItem pairs a title with content. Tabs creates a tab container and Bind connects
+the active index to reactive state. Layout and Paint present the active content
+and tab controls; invalid indices should follow the component's documented
+fallback behavior.
+
+Sidebar
+-------
+
+SidebarItem describes title, icon, selection, and optional badge. Sidebar creates
+a labeled navigation surface and lays out items vertically. Selection is data
+used by styling and application navigation logic.
+
+Split Pane
+----------
+
+SplitDirection selects horizontal or vertical orientation. SplitPane creates a
+two-child component. WithRatio configures proportional division; WithFixedFirst
+configures a fixed first-pane size. Layout assigns both child bounds and Paint
+renders them in order.
+
+Breadcrumbs
+-----------
+
+BreadcrumbItem represents a segment. Breadcrumb creates an ordered navigation
+trail. Item order and action callbacks are part of the navigation contract.
+
+Menus and Menu Bars
+-------------------
+
+MenuItem can represent an action, shortcut, or divider. ActionItem,
+ShortcutItem, and DividerItem construct those forms. NewMenu creates a titled
+menu; SimpleMenu creates a one-action convenience menu.
+
+MenuBar and MenuBarFromItems create menu-bar components. Menu overlays must be
+painted above base content and checked before underlying content receives pointer
+input.
+
+Toolbar and Status Bar
+----------------------
+
+Toolbar groups controls horizontally. StatusSegment represents one status
+message, and StatusBar combines a main message with optional segments.
+
+State, Order, and Ownership
+---------------------------
+
+Navigation components return mutable pointers and may bind reactive selection.
+Configure before mounting and coordinate state changes with redraw. Child order
+usually controls painter order and can affect hit testing for overlapping menus
+or panes.
+
+Testing Guidance
+----------------
+
+Test selected tabs, sidebar item layout, split ratio and fixed sizing, breadcrumb
+order, menu actions and overlays, toolbar composition, and status segments.

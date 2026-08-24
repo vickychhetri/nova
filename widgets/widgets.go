@@ -1,5 +1,10 @@
 package widgets
 
+// Package widgets provides the public, ergonomic widget facade for Nova.
+//
+// It re-exports common UI builders and specialized widgets from subpackages so
+// applications can compose controls through one import path.
+
 import (
 	"github.com/vickychhetri/nova/core/color"
 	"github.com/vickychhetri/nova/state"
@@ -13,6 +18,7 @@ import (
 )
 
 // --- Basic UI Primitives ---
+// These aliases expose geometry and core UI builders alongside common widgets.
 var (
 	All         = ui.All
 	Symmetric   = ui.Symmetric
@@ -39,6 +45,7 @@ var (
 )
 
 // --- Form Controls & Inputs ---
+// These aliases expose forms, validation helpers, and input controls.
 var (
 	Form          = forms.Form
 	NewFormState  = forms.NewFormState
@@ -60,10 +67,11 @@ var (
 	FilePicker    = forms.FilePicker
 )
 
-// SelectOption re-export
+// SelectOption re-exports the form select option type.
 type SelectOption = forms.SelectOption
 
 // --- Navigation & Structure ---
+// These aliases expose navigation containers and menu model types.
 var (
 	Tabs          = nav.Tabs
 	Sidebar       = nav.Sidebar
@@ -94,10 +102,11 @@ const (
 )
 
 // --- Feedback & Overlays ---
+// These aliases expose status, dialog, toast, and command-palette widgets.
 var (
-	Alert          = feedback.Alert
-	Dialog         = feedback.Dialog
-	CommandPalette = feedback.CommandPalette
+	Alert           = feedback.Alert
+	Dialog          = feedback.Dialog
+	CommandPalette  = feedback.CommandPalette
 	NewToastManager = feedback.NewToastManager
 )
 
@@ -111,6 +120,7 @@ const (
 type CommandItem = feedback.CommandItem
 
 // --- Data Displays ---
+// These aliases expose virtualized and hierarchical data widgets.
 var (
 	VirtualList = data.VirtualList
 	Table       = data.Table
@@ -121,6 +131,7 @@ type TableColumn = data.TableColumn
 type TreeNode = data.TreeNode
 
 // --- Specialized Editors ---
+// These aliases expose editor-oriented components.
 var (
 	CodeEditor = editor.CodeEditor
 	Canvas     = editor.Canvas

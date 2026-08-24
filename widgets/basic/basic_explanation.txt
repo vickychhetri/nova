@@ -1,0 +1,84 @@
+Basic Widgets Explanation
+=========================
+
+widgets/basic/basic.go provides small visual building blocks used throughout Nova:
+badges, avatars, spinners, progress bars, cards, skeleton placeholders, group
+boxes, and compact count formatting.
+
+These components implement the UI Component and RenderableComponent contracts.
+They measure under BoxConstraints and record render commands through Canvas. They
+read semantic colors from theme.Current rather than owning a platform renderer.
+
+BadgeComponent
+--------------
+
+Badge creates a compact pill label with a default/secondary treatment. Its
+Variant can be changed with Success, Warning, Error, Info, or Secondary. These
+methods mutate the component and return the same pointer for fluent setup.
+
+Badge layout measures its text and adds horizontal padding. Paint draws a rounded
+background, border, and centered label. Status variants derive colors from the
+active theme's Success, Warning, Error, or Info tokens.
+
+AvatarComponent
+---------------
+
+Avatar creates a circular surface containing initials. WithSize changes its
+nominal diameter. Layout constrains a square using that size, and Paint draws the
+circle and text centered inside it.
+
+SpinnerComponent
+----------------
+
+Spinner is a loading indicator with a fixed layout footprint. It paints a visual
+activity mark without requiring application data.
+
+ProgressBarComponent
+--------------------
+
+Progress creates a normalized progress indicator. Its value is expected to be
+between zero and one; the component's layout and paint path determine how the
+value is represented visually.
+
+CardComponent and GroupBoxComponent
+------------------------------------
+
+Card creates a titled content surface and can receive a subtitle. GroupBox
+creates a labeled framed content area. Both compose child components through the
+Node tree and paint decoration around their content.
+
+SkeletonComponent
+-----------------
+
+Skeleton creates a fixed-size placeholder for loading states. It reserves the
+requested geometry and paints a subdued surface so layouts remain stable while
+content is unavailable.
+
+FormatCount
+-----------
+
+FormatCount converts an integer to a compact human-readable form using K, M, and
+B suffixes when appropriate. It is presentation formatting, not a serialization
+format; callers should use the original integer for calculations.
+
+Lifecycle and Ownership
+-----------------------
+
+The builders return mutable component pointers. Configure them before mounting,
+and avoid changing fields concurrently with layout or paint. Node supplies
+bounds and Canvas supplies the local recording context.
+
+Theme Integration
+-----------------
+
+Basic widgets read the active theme for semantic surfaces, text, borders, and
+status colors. Theme changes require the surrounding application to invalidate
+and repaint consumers.
+
+Testing Guidance
+----------------
+
+Test constructors, variant methods, size configuration, normalized progress,
+text measurement, child layout, command paint order, and count formatting.
+Use render-command assertions for drawing behavior and separate rasterizer tests
+for final pixels.

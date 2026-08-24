@@ -14,6 +14,9 @@ import (
 	"github.com/vickychhetri/nova/ui"
 )
 
+// Package basic provides small, reusable visual widgets such as badges,
+// avatars, progress indicators, cards, and skeleton placeholders.
+
 // --- Badge / Tag ---
 
 type BadgeComponent struct {
@@ -23,9 +26,11 @@ type BadgeComponent struct {
 	Variant BadgeVariant
 }
 
+// BadgeVariant selects a badge's semantic color treatment.
 type BadgeVariant int
 
 const (
+	// BadgeDefault is the neutral badge style.
 	BadgeDefault BadgeVariant = iota
 	BadgeSuccess
 	BadgeWarning
@@ -41,10 +46,19 @@ func Badge(text string) *BadgeComponent {
 	}
 }
 
-func (b *BadgeComponent) Success() *BadgeComponent   { b.Variant = BadgeSuccess; return b }
-func (b *BadgeComponent) Warning() *BadgeComponent   { b.Variant = BadgeWarning; return b }
-func (b *BadgeComponent) Error() *BadgeComponent     { b.Variant = BadgeError; return b }
-func (b *BadgeComponent) Info() *BadgeComponent      { b.Variant = BadgeInfo; return b }
+// Success selects the success badge variant.
+func (b *BadgeComponent) Success() *BadgeComponent { b.Variant = BadgeSuccess; return b }
+
+// Warning selects the warning badge variant.
+func (b *BadgeComponent) Warning() *BadgeComponent { b.Variant = BadgeWarning; return b }
+
+// Error selects the error badge variant.
+func (b *BadgeComponent) Error() *BadgeComponent { b.Variant = BadgeError; return b }
+
+// Info selects the informational badge variant.
+func (b *BadgeComponent) Info() *BadgeComponent { b.Variant = BadgeInfo; return b }
+
+// Secondary selects the neutral/default badge variant.
 func (b *BadgeComponent) Secondary() *BadgeComponent { b.Variant = BadgeDefault; return b }
 
 func (b *BadgeComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
@@ -56,7 +70,6 @@ func (b *BadgeComponent) Paint(node *ui.Node, canvas *render.Canvas) {
 	t := theme.Current()
 	rect := geom.NewRect(0, 0, node.Bounds.Width, node.Bounds.Height)
 	radius := geom.RadiusUniform(4)
-
 	bgCol := t.Palette.Secondary
 	textCol := t.Palette.SecondaryText
 	borderCol := t.Palette.Border

@@ -1,5 +1,8 @@
 package forms
 
+// Package forms provides form state, validation rules, and reusable input
+// controls.
+
 import (
 	"regexp"
 	"strings"

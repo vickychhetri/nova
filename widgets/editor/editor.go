@@ -1,5 +1,7 @@
 package editor
 
+// Package editor provides code-editing and custom drawing widgets.
+
 import (
 	"fmt"
 	"strings"

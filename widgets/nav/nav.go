@@ -1,5 +1,8 @@
 package nav
 
+// Package nav provides tabs, sidebars, split panes, menus, toolbars, and status
+// bars for application navigation and structure.
+
 import (
 	"github.com/vickychhetri/nova/core/color"
 	"github.com/vickychhetri/nova/core/geom"

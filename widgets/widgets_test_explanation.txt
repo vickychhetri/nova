@@ -1,0 +1,20 @@
+Comprehensive Widgets Test Explanation
+=======================================
+
+widgets/widgets_test.go composes representative widgets through the public
+widgets facade. It builds a virtualized table with 10,000 rows, tabs containing a
+card, data explorer, and code editor, a sidebar, a split pane, and a dialog over
+the main layout.
+
+The test uses reactive state for dialog visibility and selected tab, mounts the
+complete tree with a dark theme and unit scale, applies tight 1024 by 768
+constraints, and verifies the returned size.
+
+It then paints into a render.CommandBuffer through Canvas and asserts that work
+was recorded. This proves the facade components can cross package boundaries and
+form a coherent UI tree without opening a native window.
+
+The test intentionally does not inspect every child bound, invoke every callback,
+or validate final rasterized pixels. Those details belong in focused tests for
+the relevant widget or renderer. Add exact assertions when a facade contract
+changes, and keep large data construction representative of real usage.

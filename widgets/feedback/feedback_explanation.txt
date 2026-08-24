@@ -1,0 +1,59 @@
+Feedback Widgets Explanation
+============================
+
+widgets/feedback/feedback.go provides user-feedback components: alerts, toast
+notifications, modal dialogs, and command palettes.
+
+Alert Types
+-----------
+
+AlertType distinguishes informational, success, warning, and error feedback.
+Alert creates an AlertComponent with title, message, and severity. Layout and
+Paint use semantic theme colors and render the message as an inline surface.
+
+ToastManager
+------------
+
+ToastManager stores active ToastItem values. NewToastManager creates an empty
+manager. Show adds a notification with a generated identifier; Dismiss removes
+the matching item.
+
+Toast state is application-owned feedback state. A surrounding component or
+window must request redraw when items are added or dismissed, and any expiration
+policy belongs to the manager or caller that schedules it.
+
+DialogComponent
+---------------
+
+Dialog creates a modal component controlled by a reactive boolean. OnOk stores a
+callback for confirmation. Layout and Paint describe the visible dialog only
+when the controlling state indicates it is open.
+
+The dialog's open state and callback are separate concerns: changing state
+controls visibility, while the callback defines the action after confirmation.
+
+Command Palette
+---------------
+
+CommandItem describes a command label and action. CommandPalette creates a
+component that presents command choices. The component owns presentation and
+selection wiring; application code owns command behavior.
+
+Lifecycle and Overlay Behavior
+------------------------------
+
+Feedback components often appear above ordinary content. Their Node integration
+may use overlays or a stacked tree. Input routing must ensure modal and popup
+content receives pointer and keyboard interaction before content underneath.
+
+Theme and Accessibility
+-----------------------
+
+Semantic status colors should be paired with readable text and, where necessary,
+icons or other non-color cues. Theme changes require redraw invalidation.
+
+Testing Guidance
+----------------
+
+Test alert variants, toast insertion and dismissal, dialog open state and OK
+callback, command item construction, layout visibility, and overlay ordering.

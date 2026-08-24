@@ -1,0 +1,55 @@
+Data Widgets Explanation
+========================
+
+widgets/data/data.go provides VirtualList, Table, and Tree components for data
+that may be too large or hierarchical to render as a flat collection.
+
+VirtualListComponent
+--------------------
+
+VirtualList stores item count, item height, scroll state, an item renderer, and
+a virtualization helper. Layout calculates the visible range and builds only
+those item nodes. This keeps work proportional to the viewport rather than the
+logical item count.
+
+The item renderer receives an index and returns a Component. ScrollOffset is a
+reactive value so scrolling can invalidate and rebuild the visible region.
+
+TableComponent
+--------------
+
+Table describes columns with TableColumn values and obtains cell text through a
+row/column callback. It can combine column widths, virtualized row calculation,
+and visible cell rendering. The callback owns data lookup and formatting; the
+widget owns table structure and presentation.
+
+TableColumn contains a title, width, and field identifier. Widths are layout
+inputs and should use consistent logical units.
+
+TreeComponent
+-------------
+
+Tree renders hierarchical TreeNode values. TreeNode contains display data and
+nested children. countTreeNodes supports sizing or traversal decisions for the
+hierarchy.
+
+Data and Lifecycle
+------------------
+
+These widgets implement UI layout and paint contracts. They do not own a data
+fetching system. Callers should update source data and request reconciliation
+when rows, columns, or tree expansion change.
+
+Virtualization Tradeoff
+-----------------------
+
+Virtual lists reduce node creation and render work but require stable item
+heights or a measurement strategy. Dynamic data changes can invalidate visible
+ranges and scroll metrics.
+
+Testing Guidance
+----------------
+
+Test visible-range limits, item renderer indices, scroll updates, table column
+geometry, cell callback values, tree nesting, and empty data. Keep large-count
+performance checks separate from exact layout assertions.

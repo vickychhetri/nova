@@ -1,5 +1,7 @@
 package data
 
+// Package data provides virtualized list, table, and hierarchical tree widgets.
+
 import (
 	"fmt"
 	"math"
@@ -107,13 +109,13 @@ type TableColumn struct {
 
 type TableComponent struct {
 	ui.BaseComponent
-	Columns      []TableColumn
-	RowCount     int
-	RowHeight    float64
-	ScrollOffset *state.Value[float64]
+	Columns       []TableColumn
+	RowCount      int
+	RowHeight     float64
+	ScrollOffset  *state.Value[float64]
 	SelectedIndex *state.Value[int]
-	GetCell      func(row int, col int) string
-	virtualizer  *virtualization.Virtualizer
+	GetCell       func(row int, col int) string
+	virtualizer   *virtualization.Virtualizer
 }
 
 // Table creates a virtualized, sorting-ready tabular data view.

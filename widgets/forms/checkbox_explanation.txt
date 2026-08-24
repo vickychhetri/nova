@@ -1,0 +1,21 @@
+Selection Controls Explanation
+==============================
+
+widgets/forms/checkbox.go provides CheckboxComponent, RadioComponent, and
+SwitchComponent for boolean and mutually exclusive selection.
+
+Checkbox creates a labeled unchecked control. Bind connects a reactive boolean;
+OnChange stores a callback. Its layout and paint represent checked,
+indeterminate, and disabled states, while Node interaction changes the bound
+value according to the component implementation.
+
+Radio creates one labeled option with a string value and shared selected state.
+When activated, it selects its value, allowing several radio components to form a
+mutually exclusive group.
+
+Switch is a labeled on/off control backed by a reactive boolean. Bind and OnChange
+provide the same state and callback pattern as Checkbox.
+
+These controls are mutable fluent components. Configure them before mounting and
+coordinate reactive values with the UI lifecycle. Tests should cover binding,
+callbacks, disabled behavior, checked rendering, radio exclusivity, and layout.

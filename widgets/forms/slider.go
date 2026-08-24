@@ -1,5 +1,8 @@
 package forms
 
+// Numeric, selection, date, color, and file controls are also implemented in
+// this package.
+
 import (
 	"fmt"
 	"math"

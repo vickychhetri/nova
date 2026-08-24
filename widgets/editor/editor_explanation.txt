@@ -1,0 +1,49 @@
+Editor Widgets Explanation
+==========================
+
+widgets/editor/editor.go provides CodeEditorComponent and CanvasWidgetComponent.
+Both are specialized renderable components that let applications display or
+edit content while integrating with Nova layout and command recording.
+
+CodeEditorComponent
+-------------------
+
+CodeEditor creates a reactive text value from initialText and stores language
+metadata and a default font size. Bind connects an external state.Value[string],
+allowing application state to own the editor content.
+
+Layout uses the current text and constraints to determine the editor footprint.
+Paint records the editor surface, line numbers, text, and syntax-oriented styling
+implemented by the current component. The language string is metadata used by
+the editor's highlighting logic.
+
+State Ownership
+---------------
+
+The editor stores text through state.Value[string]. Callers using Bind should
+coordinate ownership and updates through the state package. OnChanged callbacks
+are invoked by editor interaction according to the component implementation.
+
+CanvasWidgetComponent
+---------------------
+
+CanvasWidgetComponent exposes CustomDrawFunc, a callback receiving a render
+Canvas and bounds. It is intended for application-specific drawing that does not
+need a new specialized renderer type.
+
+The callback records commands in the supplied Canvas. It should draw within the
+provided bounds and avoid mutating unrelated UI state during paint.
+
+Coordinate and Rendering Rules
+------------------------------
+
+Node establishes local coordinates before invoking Paint. Editor components
+should use local geometry; Canvas and the render pipeline handle command storage
+and later rasterization.
+
+Testing Guidance
+----------------
+
+Test initial text and language setup, binding behavior, layout under constraints,
+custom draw invocation, command recording, and reactive updates. Keep font
+rasterization and final pixel tests in the font or renderer packages.

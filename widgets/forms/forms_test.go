@@ -14,6 +14,8 @@ import (
 	"github.com/vickychhetri/nova/widgets/forms"
 )
 
+// TestFormValidation verifies common validation rules, field registration, and
+// form-level error reporting.
 func TestFormValidation(t *testing.T) {
 	form := forms.NewFormState()
 	form.RegisterField("username", forms.Required(), forms.MinLength(3))

@@ -1,0 +1,22 @@
+Advanced Form Controls Explanation
+===================================
+
+widgets/forms/slider.go provides Slider, Select, DatePicker, ColorPicker, and
+FilePicker components.
+
+Slider stores a reactive numeric value, minimum, maximum, step, width, and change
+callback. Bind connects external state; WithStep and WithWidth configure
+interaction and layout. Consumers should keep min/max/step coherent and define
+clamping behavior for external values.
+
+SelectOption stores a display label and value. Select creates a single-choice
+control and Bind connects its selected string state. Layout and Paint present the
+available options according to the component's interaction model.
+
+DatePicker represents date selection, ColorPicker starts from an initial
+core/color.Color, and FilePicker stores a prompt for file selection. Native
+selection behavior depends on the broader application/platform integration.
+
+All controls implement UI layout and paint contracts. Test constructors, binding,
+configuration, state updates, callback behavior, constraints, and command output
+separately from native dialogs or file-system integration.

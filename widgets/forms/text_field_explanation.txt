@@ -1,0 +1,23 @@
+Text Field and Numeric Input Explanation
+========================================
+
+widgets/forms/text_field.go implements TextField, PasswordField, TextArea, and
+NumberInput controls, plus clipboard helpers.
+
+ReadClipboard first attempts supported system clipboard commands and uses an
+internal synchronized fallback when native clipboard access is unavailable.
+WriteClipboard updates the system clipboard when possible and keeps fallback text
+for environments without a clipboard utility.
+
+TextField stores placeholder, label, bound string state, error, width, disabled
+state, and change/submit callbacks. Bind connects external state; fluent methods
+configure appearance and behavior. Layout measures the current value and Paint
+records the field, label, error, and caret-oriented content.
+
+PasswordField follows the text-field state model while masking displayed content.
+TextArea supports multi-line content and sizing. NumberInput binds a float value
+with optional label, prefix, suffix, min/max, step, width, and change callback.
+
+Input widgets are stateful and should be configured before mount. Tests should
+cover binding, clipboard fallback, disabled behavior, callbacks, validation/error
+visuals, masking, multiline content, numeric clamping, and step changes.

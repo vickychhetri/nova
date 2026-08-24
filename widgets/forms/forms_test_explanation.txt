@@ -1,0 +1,23 @@
+Form Tests Explanation
+======================
+
+widgets/forms/forms_test.go tests form validation and representative form-widget
+rendering and interaction. It uses the external forms_test package to exercise
+exported APIs.
+
+The validation test registers required/minimum-length and email rules, verifies
+an empty form is invalid, checks field-specific failure, then exercises valid
+values and error reporting. It protects the contract between rule helpers and
+FormState.
+
+The rendering test builds multiple controls, mounts them with theme and scale,
+performs constrained layout, and verifies that painting records commands. It does
+not require a native window or assert rasterized pixels.
+
+The number-input test verifies state binding and interaction behavior for numeric
+input. Keep these tests focused on public behavior; renderer pixels, native
+clipboard utilities, and platform dialogs belong in their owning packages.
+
+When extending coverage, add boundary values, disabled controls, callbacks,
+reactive updates, validation errors, and exact field payload assertions where they
+protect a meaningful contract.

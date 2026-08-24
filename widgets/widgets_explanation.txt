@@ -1,0 +1,27 @@
+Widgets Facade Explanation
+==========================
+
+widgets/widgets.go is Nova's convenience facade. It re-exports geometry helpers,
+core UI builders, form controls, navigation types, feedback components, data
+widgets, and specialized editors from their subpackages.
+
+The aliases preserve the underlying constructors and types. Applications can
+import widgets for a broad component vocabulary while subpackages remain
+available when a narrower dependency is preferable.
+
+Categories include:
+
+- Basic primitives such as Text, Button, Container, Card, Badge, and Progress.
+- Forms such as TextField, Checkbox, Slider, Select, and DatePicker.
+- Navigation such as Tabs, Sidebar, SplitPane, menus, Toolbar, and StatusBar.
+- Feedback such as Alert, Dialog, ToastManager, and CommandPalette.
+- Data such as VirtualList, Table, and Tree.
+- Editors such as CodeEditor and custom Canvas.
+
+Type aliases preserve access to SelectOption, TabItem, SidebarItem,
+BreadcrumbItem, MenuBarItem, Menu, MenuItem, StatusSegment, CommandItem,
+TableColumn, TreeNode, and CustomDrawFunc.
+
+The facade contains no separate widget state; behavior remains in the source
+subpackages. Tests should verify representative alias construction and retain
+focused behavior tests in each owning package.

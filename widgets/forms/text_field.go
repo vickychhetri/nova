@@ -1,5 +1,8 @@
 package forms
 
+// Text-field and editor-style input controls are implemented in this file,
+// including clipboard integration and reactive value binding.
+
 import (
 	"fmt"
 	"os/exec"

@@ -1,0 +1,18 @@
+Navigation Overlay Test Explanation
+====================================
+
+widgets/nav/nav_test.go verifies menu-bar overlay behavior through the public nav
+API. It creates File and Edit menus, including an Export action with a callback,
+then mounts the menu bar with a light theme and unit scale.
+
+The test lays out the menu bar under a constrained width, paints it into a
+command buffer, and exercises overlay pointer dispatch. It verifies that a menu
+can open and that the intended action callback is reached through overlay
+interaction rather than ordinary base-tree hit testing.
+
+This test protects the relationship between menu construction, overlay state,
+layout geometry, painting, and pointer routing. It does not test native window
+input translation or every menu style.
+
+Future coverage can add overlapping menus, keyboard shortcuts, dismissed
+outside-click behavior, disabled items, dividers, and multiple action paths.

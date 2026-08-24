@@ -12,6 +12,8 @@ import (
 	"github.com/vickychhetri/nova/widgets/nav"
 )
 
+// TestMenuBarOverlayBehavior verifies menu construction, overlay interaction,
+// layout, painting, and action callback routing.
 func TestMenuBarOverlayBehavior(t *testing.T) {
 	fileExportClicked := false
 
