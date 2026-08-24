@@ -16,7 +16,8 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// FontWeight represents standard font weight constants.
+// FontWeight values represent standard numeric font weights used when choosing
+// an embedded font face. The constants follow common CSS/OpenType conventions.
 const (
 	WeightLight    = 300
 	WeightRegular  = 400
@@ -25,18 +26,29 @@ const (
 	WeightBold     = 700
 )
 
-// GlyphMetrics describes dimensions and offsets of a rasterized character.
+// GlyphMetrics describes the layout metrics and alpha bitmap of one rasterized
+// character.
+//
+// Width and Height describe the returned bitmap area. AdvanceX is the distance
+// to move the text pen for the next glyph, while BearingX and BearingY describe
+// the glyph's placement relative to its origin and baseline.
 type GlyphMetrics struct {
-	Rune     rune
-	Width    float64
-	Height   float64
+	// Rune is the character represented by this metric record.
+	Rune rune
+	// Width and Height are the bitmap dimensions in logical pixels.
+	Width  float64
+	Height float64
+	// AdvanceX is the horizontal layout advance supplied by OpenType.
 	AdvanceX float64
+	// BearingX and BearingY are the glyph's baseline-relative offsets.
 	BearingX float64
 	BearingY float64
-	Bitmap   *image.Alpha
+	// Bitmap contains the glyph coverage as an alpha-only image.
+	Bitmap *image.Alpha
 }
 
-// Global parsed font families
+// Embedded font families are parsed lazily by initFonts and reused by all face
+// and glyph requests. The sfnt.Font values are immutable after parsing.
 var (
 	parsedRegular *sfnt.Font
 	parsedMedium  *sfnt.Font
@@ -47,6 +59,9 @@ var (
 
 func initFonts() {
 	fontsInitOnce.Do(func() {
+		// Parse each embedded TTF exactly once. Parse errors are ignored here
+		// because the bundled assets are compile-time resources; getFace still
+		// provides a fallback path if a face cannot be created.
 		parsedRegular, _ = opentype.Parse(goregular.TTF)
 		parsedMedium, _ = opentype.Parse(gomedium.TTF)
 		parsedBold, _ = opentype.Parse(gobold.TTF)
@@ -54,17 +69,24 @@ func initFonts() {
 	})
 }
 
-// Face cache to avoid re-creating OpenType faces
+// faceKey identifies a cached face by the normalized weight and integer point
+// size used to create it.
 type faceKey struct {
 	weight int
 	size   int
 }
 
 var (
+	// faceCacheMu protects faceCache because faces may be requested by multiple
+	// rendering or layout goroutines.
 	faceCacheMu sync.RWMutex
-	faceCache   = make(map[faceKey]font.Face)
+	// faceCache avoids repeatedly constructing OpenType face instances.
+	faceCache = make(map[faceKey]font.Face)
 )
 
+// getFace returns a cached OpenType face for the requested size and weight.
+// Font sizes are rounded to integer values and clamped to a minimum of 8 so
+// cache keys remain bounded and tiny faces remain usable.
 func getFace(fontSize float64, weight int) font.Face {
 	initFonts()
 
@@ -82,6 +104,8 @@ func getFace(fontSize float64, weight int) font.Face {
 	}
 	faceCacheMu.RUnlock()
 
+	// Weight selection currently distinguishes regular, medium, and bold
+	// families. Intermediate values use the closest supported lower tier.
 	sf := parsedRegular
 	if weight >= WeightBold && parsedBold != nil {
 		sf = parsedBold
@@ -95,7 +119,7 @@ func getFace(fontSize float64, weight int) font.Face {
 		Hinting: font.HintingFull,
 	})
 	if err != nil {
-		// Fallback to regular
+		// Fall back to the regular family if the selected face cannot be built.
 		face, _ = opentype.NewFace(parsedRegular, &opentype.FaceOptions{
 			Size:    float64(sizeInt),
 			DPI:     72,
@@ -110,7 +134,8 @@ func getFace(fontSize float64, weight int) font.Face {
 	return face
 }
 
-// Glyph Cache
+// glyphKey identifies a cached rasterized glyph by rune, normalized size, and
+// requested weight.
 type glyphKey struct {
 	r      rune
 	size   int
@@ -118,11 +143,16 @@ type glyphKey struct {
 }
 
 var (
+	// glyphCacheMu protects glyphCache during concurrent glyph lookup and
+	// insertion.
 	glyphCacheMu sync.RWMutex
-	glyphCache   = make(map[glyphKey]GlyphMetrics)
+	// glyphCache stores complete metric and bitmap results for reuse.
+	glyphCache = make(map[glyphKey]GlyphMetrics)
 )
 
-// GetGlyph returns glyph metrics and smooth vector rasterized alpha bitmap for rune r.
+// GetGlyph returns metrics and an alpha bitmap for rune r at fontSize and
+// weight. Results are cached after the first rasterization for a given rune,
+// normalized size, and weight combination.
 func GetGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
 	sizeInt := int(math.Round(fontSize))
 	if sizeInt < 8 {
@@ -147,7 +177,9 @@ func GetGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
 	return gm
 }
 
-// MeasureCharWidth calculates exact proportional character advance using OpenType face.
+// MeasureCharWidth returns the proportional horizontal advance for r using the
+// selected OpenType face. The result is expressed in logical pixels rather than
+// the font package's internal 26.6 fixed-point units.
 func MeasureCharWidth(r rune, fontSize float64, weight int) float64 {
 	face := getFace(fontSize, weight)
 	if face == nil {
@@ -161,6 +193,8 @@ func MeasureCharWidth(r rune, fontSize float64, weight int) float64 {
 }
 
 func rasterizeVectorGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
+	// OpenType metrics use 26.6 fixed-point values. Convert them to floating
+	// point logical pixels before calculating bitmap dimensions and bearings.
 	face := getFace(fontSize, weight)
 	metrics := face.Metrics()
 	ascent := float64(metrics.Ascent) / 64.0
@@ -168,6 +202,8 @@ func rasterizeVectorGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
 
 	bounds, adv, ok := face.GlyphBounds(r)
 	if !ok {
+		// Unknown glyphs still receive a predictable advance so text layout can
+		// continue without a missing-glyph error.
 		adv = fixed.I(int(fontSize * 0.55))
 	}
 
@@ -189,12 +225,16 @@ func rasterizeVectorGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
 		totalW = 1
 	}
 
+	// Draw into a temporary white RGBA image, then retain only alpha. This
+	// produces a reusable coverage bitmap that the rasterizer can tint later.
 	dstRGBA := image.NewRGBA(image.Rect(0, 0, totalW, totalH))
 	drawer := &font.Drawer{
 		Dst:  dstRGBA,
 		Src:  image.NewUniform(color.RGBA{255, 255, 255, 255}),
 		Face: face,
-		Dot:  fixed.Point26_6{X: fixed.I(0), Y: fixed.I(int(ascent))},
+		// Position the glyph at the font ascent so the bitmap follows the
+		// standard baseline convention used by x/image/font.
+		Dot: fixed.Point26_6{X: fixed.I(0), Y: fixed.I(int(ascent))},
 	}
 	drawer.DrawString(string(r))
 
@@ -206,6 +246,9 @@ func rasterizeVectorGlyph(r rune, fontSize float64, weight int) GlyphMetrics {
 		}
 	}
 
+	// These values are retained from the glyph-bound calculation for future
+	// bearing-aware bitmap placement; Width and Height currently use the full
+	// font line box to keep cached glyph images consistently sized.
 	_ = glyphW
 	_ = glyphH
 	_ = minY

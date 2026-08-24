@@ -1,0 +1,431 @@
+Nova Font Package Explanation
+=============================
+
+Purpose
+-------
+
+font/font.go provides Nova's embedded-font and glyph-rasterization support. It
+turns bundled Go font assets into reusable OpenType faces, measures character
+advances, and produces alpha-only glyph bitmaps for the software renderer.
+
+The package sits between font assets and rendering code:
+
+    embedded TTF data
+            |
+            v
+       parsed sfnt.Font
+            |
+            v
+       cached font.Face
+            |
+            v
+       GlyphMetrics + alpha bitmap
+            |
+            v
+       software rasterizer
+
+The package does not draw colored text directly. It produces a coverage bitmap;
+the renderer applies the requested text color and blends the glyph into its
+framebuffer.
+
+Embedded Font Families
+----------------------
+
+The package embeds four Go font assets from golang.org/x/image/font/gofont:
+
+- Go regular.
+- Go medium.
+- Go bold.
+- Go mono.
+
+The TTF byte data is compiled into the program through the Go font packages.
+There is no runtime font-file lookup for these bundled families, which makes the
+basic text path predictable across machines.
+
+The parsed font pointers are:
+
+    parsedRegular
+    parsedMedium
+    parsedBold
+    parsedMono
+
+The current face-selection logic uses regular, medium, and bold based on the
+requested numeric weight. The mono font is parsed and retained but is not
+currently selected by getFace because the public API does not include a family
+parameter.
+
+Lazy Initialization
+-------------------
+
+initFonts parses all embedded TTF data inside sync.Once:
+
+    fontsInitOnce.Do(func() {
+        ...
+    })
+
+This ensures parsing happens at most once, even if several goroutines request a
+face or glyph at the same time. Initialization is lazy because no font work is
+performed until a caller needs measurement or rasterization.
+
+The bundled font data is treated as immutable after parsing. The sync.Once
+protects initialization; the separate caches use their own read/write mutexes.
+
+Font Weights
+------------
+
+The package defines common numeric weights:
+
+- WeightLight: 300.
+- WeightRegular: 400.
+- WeightMedium: 500.
+- WeightSemiBold: 600.
+- WeightBold: 700.
+
+getFace currently maps these numeric values into the available embedded face
+tiers:
+
+- Weights below 500 use the regular family.
+- Weights from 500 through 699 use the medium family.
+- Weights of 700 or greater use the bold family.
+
+There is no separate light or semibold embedded asset in the current code.
+Those values therefore use the nearest supported selection according to these
+thresholds. The requested numeric weight remains part of the cache key even
+when multiple values select the same underlying family.
+
+Face Cache
+----------
+
+Creating an OpenType face repeatedly is more expensive than reusing one. The
+package stores faces in faceCache, keyed by faceKey:
+
+    type faceKey struct {
+        weight int
+        size   int
+    }
+
+The requested floating-point font size is rounded to an integer for the cache
+key. Values below 8 are clamped to 8. This keeps tiny or fractional requests
+from creating unusable faces and limits the number of distinct cache entries.
+
+faceCacheMu protects the map with a read/write mutex:
+
+1. Acquire a read lock and check for an existing face.
+2. Return the cached face when found.
+3. Release the read lock before creating a new face.
+4. Create the selected OpenType face.
+5. Acquire the write lock and store it in the map.
+
+The current insertion path does not recheck the map after releasing the read
+lock. Two concurrent cache misses may therefore construct duplicate equivalent
+faces before one overwrites the entry. The map remains protected and correct,
+but avoiding duplicate construction would require a second check or a more
+specialized cache strategy.
+
+Face Creation and Fallback
+--------------------------
+
+getFace creates an opentype.Face with:
+
+- The normalized integer point size.
+- DPI set to 72.
+- Full font hinting.
+
+If face creation fails for the selected family, the method attempts to create a
+regular face with the same options. If even that fallback fails, the returned
+face may be nil; callers such as MeasureCharWidth and rasterizeVectorGlyph
+should handle that possibility according to their contracts.
+
+GlyphMetrics
+------------
+
+GlyphMetrics describes both layout data and the rasterized character:
+
+- Rune: the character represented.
+- Width: returned bitmap width.
+- Height: returned bitmap height.
+- AdvanceX: horizontal pen movement for the next glyph.
+- BearingX: horizontal glyph-bound offset.
+- BearingY: ascent-relative vertical placement information.
+- Bitmap: alpha-only glyph coverage image.
+
+Width and Height describe the generated bitmap area. AdvanceX is not necessarily
+equal to Width: a glyph can have side bearings, whitespace, or a bitmap wider or
+narrower than its layout advance.
+
+The Bitmap contains alpha coverage rather than a final color. This allows the
+same cached glyph to be rendered with different text colors and alpha values.
+
+Glyph Cache
+-----------
+
+GetGlyph caches complete GlyphMetrics results using glyphKey:
+
+    type glyphKey struct {
+        r      rune
+        size   int
+        weight int
+    }
+
+The rune, normalized size, and weight determine the cache entry. As with face
+sizes, requested sizes are rounded and clamped to a minimum of 8.
+
+The lookup flow is:
+
+1. Normalize the requested size.
+2. Check glyphCache under a read lock.
+3. Return the cached metrics on a hit.
+4. Rasterize the glyph on a miss.
+5. Store the result under a write lock.
+6. Return the metrics.
+
+The cache avoids repeating glyph layout and bitmap work for repeated characters,
+which is important when text is redrawn across many frames.
+
+Like the face cache, concurrent misses can perform duplicate rasterization before
+one result replaces the other. The cache map is protected, but the implementation
+prioritizes straightforward locking over single-flight construction.
+
+Size Normalization
+------------------
+
+Both face and glyph requests normalize fontSize with:
+
+    sizeInt := int(math.Round(fontSize))
+
+Then values below 8 are changed to 8. The normalized size controls the cache key
+and the actual OpenType face size.
+
+This means nearby sizes can share a cache entry after rounding. It also means
+that a request smaller than 8 does not produce a truly smaller bitmap. Callers
+that need sub-8-pixel typography would require a deliberate change to this
+policy and its rendering quality assumptions.
+
+MeasureCharWidth
+----------------
+
+MeasureCharWidth returns the exact proportional advance reported by the selected
+OpenType face, converted from fixed-point units to logical pixels.
+
+x/image/font reports advances in 26.6 fixed-point format, where one logical unit
+is represented by 64 integer subdivisions. The package converts with:
+
+    float64(adv) / 64.0
+
+If no face is available or the face does not contain the requested rune, the
+method returns a fallback estimate of fontSize * 0.55. This keeps layout moving
+when a glyph is unavailable, though the estimate is not proportional to the
+actual character shape.
+
+OpenType Metrics
+----------------
+
+rasterizeVectorGlyph reads:
+
+- face.Metrics for ascent and descent.
+- face.GlyphBounds for glyph geometry.
+- face.GlyphAdvance for horizontal advance when available.
+
+Metrics from x/image/font use fixed.Int26_6 values. Dividing by 64 converts them
+to floating-point logical pixels:
+
+    logicalValue = fixedValue / 64
+
+The ascent and descent determine a line-box height. If the calculated height is
+less than one pixel, the implementation falls back to approximately 1.2 times
+the requested font size.
+
+Glyph bounds provide minX, minY, maxX, and maxY. The code calculates glyphW,
+glyphH, and minY for bound information, while the actual bitmap uses the full
+font line-box dimensions and the horizontal advance. This gives cached glyph
+images a consistent vertical area for the current renderer path.
+
+Missing Glyphs
+--------------
+
+If face.GlyphBounds cannot find a rune, rasterizeVectorGlyph uses a fallback
+advance of approximately 55 percent of the requested font size. The function
+still creates a bitmap container and returns GlyphMetrics, allowing text layout
+to continue rather than failing the entire string.
+
+Whether the bitmap visibly contains a replacement glyph depends on the font
+library's drawing behavior. Consumers should not assume that an unknown rune
+always has visible pixels; AdvanceX is the reliable fallback layout value.
+
+Alpha Bitmap Generation
+-----------------------
+
+rasterizeVectorGlyph draws the rune into a temporary RGBA image with an opaque
+white source:
+
+    dstRGBA := image.NewRGBA(...)
+
+The font drawer is positioned at x=0 and y=ascent. That y coordinate places the
+glyph relative to the standard font baseline using the font's ascent metric.
+
+After drawing, the function creates an image.Alpha of the same dimensions and
+copies only the alpha channel from each RGBA pixel. The RGB values are discarded
+because the final text color is supplied later by the renderer.
+
+The resulting alpha image is suitable for tinting:
+
+    tintedColor = requestedColor * glyphCoverage
+
+This keeps the glyph cache independent of the color used by each text command.
+
+Interaction with the Software Rasterizer
+-----------------------------------------
+
+The software renderer calls font.GetGlyph for every rune in DrawText. It then:
+
+1. Reads the glyph bitmap.
+2. Converts the current pen position to pixels.
+3. Reads each alpha value.
+4. Multiplies the requested text color by glyph coverage.
+5. Sends the tinted pixel through framebuffer alpha blending.
+6. Advances by GlyphMetrics.AdvanceX.
+
+The font package therefore owns font selection, glyph rasterization, and metric
+production. The rasterizer owns positioning, clipping, color application, and
+compositing.
+
+Low-Coverage Adjustment
+-----------------------
+
+The software rasterizer, not this package, slightly adjusts very low glyph alpha
+coverage before blending. This is a rendering-quality choice applied at draw
+time, while the font package preserves the original alpha bitmap in the cache.
+
+Memory and Ownership
+--------------------
+
+GlyphMetrics values are stored by value in the glyph cache. The Bitmap field is
+a pointer to an image.Alpha allocated during rasterization. Returning a cached
+GlyphMetrics copies the struct but shares the Bitmap pointer.
+
+Callers should treat cached bitmaps as read-only. Mutating a returned Bitmap
+would mutate the image observed by later callers using the same cache entry.
+The package does not currently return a defensive copy because copying every
+glyph bitmap would defeat the cache's performance benefit.
+
+Face values and glyph bitmaps remain in package-level caches for the process
+lifetime. There is no cache eviction or size limit in the current implementation.
+Applications that request many distinct runes, sizes, or weights may retain
+corresponding memory until process exit.
+
+Concurrency
+-----------
+
+The face and glyph maps are protected by sync.RWMutex values, allowing concurrent
+cache hits and serializing map writes. sync.Once protects embedded font parsing.
+
+The returned face and bitmap values should be treated as immutable by callers.
+The package itself does not expose methods for mutating cached font faces.
+
+The cache locking does not make arbitrary mutation of a returned Bitmap safe.
+If an application modifies a bitmap, it must provide its own synchronization or
+copy the image first.
+
+Error Handling
+--------------
+
+The public methods do not return errors:
+
+- GetGlyph returns fallback metrics when glyph bounds are unavailable.
+- MeasureCharWidth returns a fallback width when measurement fails.
+- initFonts ignores parse errors for bundled compile-time assets.
+- getFace attempts a regular-face fallback when face creation fails.
+
+This keeps text layout and rendering APIs simple, but it also means callers do
+not receive a detailed reason when a font operation falls back. Diagnostics or
+logging would need to be added deliberately if that becomes important.
+
+Current Limitations
+-------------------
+
+The current package has several boundaries to keep in mind:
+
+- Only embedded Go fonts are available through this API.
+- The parsed mono family is not selectable through the current getFace signature.
+- Light and semibold weights map to existing regular, medium, or bold families.
+- Font sizes are rounded and clamped to a minimum of 8.
+- Cache entries are never evicted.
+- Concurrent cache misses may duplicate work temporarily.
+- Glyph shaping, ligatures, kerning across strings, and script-aware layout are
+  not implemented by GetGlyph itself.
+- Bitmap placement currently uses a consistent line-box image rather than a
+  tightly cropped glyph-bound image.
+- Public functions return fallback values instead of detailed errors.
+
+Adding a Font Family
+--------------------
+
+To support selectable families, the API would need a family identifier in the
+face and glyph cache keys. A complete change would include:
+
+1. Add the family to faceKey and glyphKey.
+2. Store or parse the family asset.
+3. Extend getFace to select by family and weight.
+4. Include family in GetGlyph and MeasureCharWidth inputs or context.
+5. Update all render callers.
+6. Add tests proving that family selection changes metrics or bitmap output.
+7. Update documentation and cache ownership rules.
+
+Adding a Weight
+---------------
+
+If a new embedded weight is added, update the weight constants, selection
+thresholds, documentation, and tests. Avoid implying that a numeric constant
+provides a visually distinct font unless getFace actually selects a distinct
+font asset.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- Embedded fonts initialize successfully.
+- Repeated GetGlyph calls return equivalent metrics.
+- Glyph cache keys distinguish rune, size, and weight.
+- Font sizes below 8 normalize consistently.
+- MeasureCharWidth returns positive advances for common glyphs.
+- Unknown runes use the documented fallback advance.
+- Bitmap dimensions are positive for supported glyphs.
+- Bitmap alpha contains coverage rather than a fixed text color.
+- Regular, medium, and bold requests select the expected families.
+- Concurrent cache access does not race or corrupt maps.
+- Software-rendered text advances consistently across multiple glyphs.
+
+Tests that need to inspect unexported cache state would belong in package font.
+External behavior should preferably be tested through the exported API in
+package font_test.
+
+Maintenance Checklist
+---------------------
+
+When changing font.go, verify:
+
+1. Every cache key includes all inputs that affect its result.
+2. Size normalization is applied consistently to faces and glyphs.
+3. Fixed-point values are converted using the correct 26.6 scale.
+4. AdvanceX remains distinct from bitmap Width.
+5. Cached bitmaps are treated as shared read-only data.
+6. Fallback behavior remains deterministic.
+7. Cache maps remain protected during concurrent access.
+8. New font assets are initialized exactly once.
+9. Renderer expectations for baseline and bitmap dimensions stay aligned.
+10. Documentation states which font families and weights are actually selected.
+
+Summary
+-------
+
+Nova's font package lazily parses embedded OpenType fonts, caches reusable faces,
+and rasterizes requested runes into alpha-only bitmaps with layout metrics. Face
+and glyph caches reduce repeated work, while fixed-point conversion preserves
+OpenType advances in logical pixels.
+
+The package intentionally separates font production from colored rendering: it
+creates reusable glyph coverage, and the software rasterizer positions, tints,
+clips, and composites that coverage into the framebuffer. Its most important
+maintenance concerns are cache-key completeness, shared bitmap ownership,
+consistent size normalization, and accurate baseline/advance handling.
