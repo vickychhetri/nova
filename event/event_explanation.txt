@@ -1,0 +1,334 @@
+Nova Event System Explanation
+=============================
+
+Purpose
+-------
+
+event/event.go defines Nova's common user-interaction event contract. It gives
+input producers a consistent set of event values and gives UI components a
+shared way to indicate that an event has been consumed.
+
+The package currently provides:
+
+- Event, the interface shared by all event values.
+- PointerEvent, for mouse, pen, and touch interaction.
+- ScrollEvent, for wheel and trackpad movement.
+- KeyEvent, for keyboard input.
+- FocusEvent, for focus changes.
+- baseEvent, the internal propagation state embedded by concrete events.
+
+The package describes event data and propagation state. It does not decide how
+windows poll input, how hit testing works, or how widgets react to an event.
+Those responsibilities belong to the platform and UI dispatch layers.
+
+Event Interface
+---------------
+
+Event has two operations:
+
+    IsHandled() bool
+    StopPropagation()
+
+IsHandled lets a dispatcher or handler inspect whether the event has already
+been consumed. StopPropagation marks it as handled.
+
+The name StopPropagation expresses the intended dispatch behavior: once a
+component handles an event, later handlers or ancestors should normally stop
+receiving it. The event package does not itself perform dispatch or walk a
+component tree. It only stores the state used by that dispatcher.
+
+Propagation Lifecycle
+---------------------
+
+A typical event lifecycle is:
+
+    input backend creates event
+              |
+              v
+       dispatcher sends event
+              |
+              v
+       component examines event
+              |
+       +------+------+
+       |             |
+   handles it     ignores it
+       |             |
+       v             v
+   StopPropagation  dispatch continues
+       |
+       v
+   IsHandled returns true
+
+A newly created concrete event starts unhandled. A handler calls
+StopPropagation after it has performed the action associated with the event.
+Subsequent dispatch code can check IsHandled before continuing propagation.
+
+StopPropagation is idempotent. Calling it multiple times simply leaves the
+handled state set to true.
+
+Shared baseEvent
+----------------
+
+baseEvent is an unexported structure containing the handled boolean. Each public
+event embeds baseEvent anonymously:
+
+    type PointerEvent struct {
+        baseEvent
+        Position geom.Point
+        Button   input.MouseButton
+        Mods     input.Modifiers
+    }
+
+Embedding promotes IsHandled and StopPropagation to the concrete event's method
+set. This allows a PointerEvent, ScrollEvent, KeyEvent, or FocusEvent to satisfy
+the Event interface without duplicating propagation fields and methods.
+
+The handled field itself remains private. Consumers can query or change event
+state through the methods rather than directly mutating an implementation
+field.
+
+Because the methods use pointer receivers, callers should normally dispatch
+pointers to concrete events when they need to call StopPropagation:
+
+    event := &event.PointerEvent{}
+    event.StopPropagation()
+
+A copied event has its own copied handled state. Passing an event by value after
+it has been handled does not create shared propagation state with the original.
+Dispatchers should use one event instance throughout a propagation pass.
+
+PointerEvent
+------------
+
+PointerEvent represents a pointer interaction from a mouse, pen, or touch
+source. Its fields are:
+
+- Position: pointer location in the coordinate space selected by the dispatcher.
+- Button: Nova's normalized pointer-button identifier.
+- Mods: modifier keys active during the interaction.
+
+Position uses geom.Point. The event package does not transform the point or
+choose whether it is window, content, or local-component coordinates. That
+choice is made by the platform and UI dispatch layers. A dispatcher that walks
+nested components may convert the global point into local coordinates before
+calling a component handler.
+
+Button uses input.MouseButton rather than a backend-specific numeric code. This
+keeps widgets independent from X11 button numbers, browser pointer IDs, or other
+platform representations.
+
+Mods uses input.Modifiers so Ctrl, Shift, Alt, Super, and related state can be
+handled consistently with keyboard events.
+
+A pointer handler typically checks Position and Button, performs hit-tested
+work, and calls StopPropagation when the event belongs to that component.
+
+ScrollEvent
+-----------
+
+ScrollEvent represents a mouse-wheel or trackpad gesture. Its fields are:
+
+- Position: pointer location at the time of the gesture.
+- DeltaX: horizontal scroll delta.
+- DeltaY: vertical scroll delta.
+- Mods: active modifier keys.
+
+Delta values are floating-point numbers because trackpads and high-resolution
+wheel devices can report partial movement. The event package does not clamp,
+round, invert, or convert these values.
+
+The sign and units originate with the input backend. Consumers should use the
+project's input conventions and avoid assuming that one event always equals one
+fixed scroll step. A scroll container may accumulate deltas, apply a scale, or
+consume only one axis.
+
+A component that consumes scrolling should call StopPropagation after it has
+accepted the gesture. Otherwise an ancestor scroll container may also respond,
+depending on the dispatcher policy.
+
+KeyEvent
+--------
+
+KeyEvent represents a keyboard key press or release. Its fields are:
+
+- Key: normalized input.Key identifier.
+- Rune: Unicode character associated with the event, when available.
+- Mods: active modifier keys.
+
+Key identifies physical or logical key meaning according to the input package.
+Rune carries text-oriented information when the backend can provide it. For
+non-printing keys such as arrows, Escape, or function keys, Rune is commonly
+zero.
+
+Key and Rune are intentionally separate. A key event can have a known key but
+no printable character, and text input can require character information that
+is not equivalent to a physical key identifier. A text field should use Rune
+when it needs character content and Key when it needs commands such as arrows,
+Backspace, or Enter.
+
+Modifier state is carried in Mods rather than encoded into Key. This lets a
+consumer decide whether Ctrl+A, Shift+Arrow, or another combination has special
+meaning.
+
+Key release support depends on the producer and dispatcher. The event type can
+represent either kind of keyboard transition, but the event struct itself does
+not include an explicit pressed/released boolean. If the application needs to
+distinguish them, the surrounding input path must provide separate handling or
+an extended event model.
+
+FocusEvent
+----------
+
+FocusEvent represents a focus transition. Its only public payload is Gained:
+
+- true means focus was received.
+- false means focus was lost.
+
+Focus events do not contain a position, key, or modifier state because the
+important information is the transition itself. A component can use focus gain
+to activate keyboard handling or focus loss to stop editing and commit or
+cancel transient state.
+
+A focus handler may call StopPropagation if focus transitions are owned by a
+specific component and should not be processed by an ancestor. Whether focus
+propagates through the UI tree is a dispatcher policy.
+
+Coordinates and Input Normalization
+-----------------------------------
+
+The event package uses Nova geometry and input types rather than native backend
+structures:
+
+- geom.Point provides the pointer position abstraction.
+- input.MouseButton normalizes pointer buttons.
+- input.Key normalizes keyboard keys.
+- input.Modifiers represents modifier state.
+
+This keeps event consumers independent from X11, Wayland, platform window APIs,
+or other native input sources. A backend is responsible for translating its raw
+events into these common types before creating a Nova event.
+
+The package does not apply coordinate transforms. If a pointer event begins in
+screen coordinates and a widget needs local coordinates, the dispatcher or hit
+testing layer should perform that conversion before invoking the widget.
+
+Event Ownership and Mutation
+----------------------------
+
+Events are mutable only with respect to propagation state. The payload fields
+are exported and can be changed by code holding the concrete event pointer, but
+normal event flow treats them as input data supplied by the producer.
+
+Handlers should generally inspect payload fields rather than rewrite them. If a
+transformed or enriched event is required, create a deliberate new event or
+use a dispatcher-specific context so the ownership change is clear.
+
+The handled flag belongs to the event instance. It is not global state and it is
+not stored in a component. This allows one dispatch pass to carry consumption
+state through multiple handlers without affecting unrelated events.
+
+Dispatcher Responsibilities
+---------------------------
+
+A dispatcher built on this package should normally:
+
+1. Create the appropriate concrete event.
+2. Deliver it to the intended target or hit-tested component.
+3. Check IsHandled according to the propagation policy.
+4. Stop dispatching when the event has been consumed.
+5. Continue to ancestors or other targets when it remains unhandled.
+
+The exact order of target, child, parent, capture, and bubble phases is outside
+this package. Those rules should be documented by the UI event dispatcher.
+
+Handler Responsibilities
+------------------------
+
+An event handler should:
+
+- Check the event type or receive the concrete type it supports.
+- Read the payload in the correct coordinate and unit convention.
+- Perform its action only when the event belongs to it.
+- Call StopPropagation after consuming the event.
+- Leave the event unhandled when another component should receive it.
+
+Stopping propagation too early can prevent expected parent or sibling behavior.
+Failing to stop after consuming an event can cause duplicate actions, such as a
+button and its parent both responding to the same pointer press.
+
+Concurrency Notes
+-----------------
+
+Event values and their handled state are not synchronized. They are intended to
+be created and dispatched within one input-processing flow. Sharing one mutable
+event instance across goroutines requires external synchronization.
+
+The Event interface does not promise thread safety. IsHandled and
+StopPropagation should be called under the same ownership or synchronization
+rules used by the dispatcher.
+
+Zero Values
+-----------
+
+The concrete event structs have useful zero values:
+
+- PointerEvent has a zero Position, default Button, and no modifiers.
+- ScrollEvent has a zero Position and zero deltas.
+- KeyEvent has the zero input.Key, a zero Rune, and no modifiers.
+- FocusEvent starts with Gained false.
+- All events start unhandled because baseEvent.handled is false by default.
+
+A zero-value event may be syntactically valid but may not represent a meaningful
+user action. Producers should populate the fields appropriate to the event
+before dispatching it.
+
+Adding a New Event Type
+-----------------------
+
+When adding a new event:
+
+1. Define a public struct for its payload.
+2. Embed baseEvent so it satisfies Event.
+3. Document the coordinate, unit, and ownership conventions.
+4. Use existing Nova types instead of backend-specific values where possible.
+5. Teach input producers to construct it.
+6. Teach dispatchers and handlers how to route it.
+7. Define when handlers should call StopPropagation.
+8. Add focused tests for payload conversion and handled-state behavior.
+
+A new event should avoid embedding unrelated state simply for convenience. Keep
+its payload limited to information needed by consumers, and document whether
+zero values have a special meaning.
+
+Testing Guidance
+----------------
+
+Useful tests for this package and its dispatchers include:
+
+- A new event starts with IsHandled returning false.
+- StopPropagation changes IsHandled to true.
+- Calling StopPropagation more than once remains safe.
+- Concrete events satisfy the Event interface.
+- Pointer and scroll positions preserve expected coordinates.
+- Scroll deltas preserve fractional values and signs.
+- Key and Rune values remain distinct.
+- FocusEvent correctly represents gain and loss.
+- Dispatch stops or continues according to handled state.
+- Copied events do not accidentally share propagation state.
+
+The event package currently contains simple data types, so many important tests
+belong near the producer and dispatcher that translate or route those values.
+
+Summary
+-------
+
+Nova events are small mutable values carrying input data and one shared
+propagation flag. PointerEvent, ScrollEvent, KeyEvent, and FocusEvent embed
+baseEvent so every event can answer IsHandled and support StopPropagation.
+
+The package normalizes common geometry and input concepts while leaving event
+creation, coordinate conversion, hit testing, dispatch order, and component
+behavior to higher layers. The central contract is straightforward: handlers
+consume an event by calling StopPropagation, and dispatchers use IsHandled to
+control further delivery.
