@@ -1,0 +1,402 @@
+Nova Theme Package Explanation
+==============================
+
+Purpose
+-------
+
+theme/theme.go defines Nova's design-token system. A Theme groups semantic
+colors, typography values, spacing distances, and corner radii so components can
+share a consistent visual language and switch between visual modes.
+
+The package provides:
+
+- Palette for semantic color roles.
+- Typography for font family and text sizes.
+- Spacing for reusable layout distances.
+- Radii for reusable corner shapes.
+- Theme for a complete design system configuration.
+- Dark and Light constructors for default modes.
+- Current and SetCurrent for process-wide theme access.
+
+The theme package describes design values. It does not draw components, perform
+layout, or enforce contrast and accessibility rules automatically.
+
+Design Tokens
+-------------
+
+A token is a named design value used by many components. Semantic names such as
+Primary, TextMuted, and BorderFocus communicate purpose instead of tying callers
+to one literal color.
+
+Using roles gives a component a stable API:
+
+    fill(buttonTheme.Palette.Primary)
+
+The actual color can change when the theme changes without requiring the button
+to know the details of every visual mode.
+
+Palette
+-------
+
+Palette contains the semantic colors used by Nova components. Its groups are:
+
+- Primary, PrimaryHover, PrimaryActive, PrimaryText.
+- Secondary, SecondaryHover, SecondaryActive, SecondaryText.
+- Background, Surface, SurfaceHover, Card.
+- Border, BorderHover, BorderFocus.
+- TextPrimary, TextSecondary, TextMuted, TextDisabled.
+- Success, Warning, Error, Info.
+
+Primary Colors
+~~~~~~~~~~~~~~
+
+Primary represents the main action color. PrimaryHover and PrimaryActive express
+pointer-hover and pressed/active states. PrimaryText is the foreground color
+that should remain readable on a primary-colored control.
+
+Components should use these tokens for the application's principal actions,
+links, selected controls, or other emphasized interaction surfaces.
+
+Secondary Colors
+~~~~~~~~~~~~~~~~
+
+Secondary provides a supporting control hierarchy. Its hover and active tokens
+allow secondary buttons or less prominent controls to respond consistently.
+SecondaryText is the foreground used on the secondary surface.
+
+Surface and Background Colors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Background is the broad application backdrop. Surface is a raised or distinct
+content layer. SurfaceHover is a temporary interaction state for that layer.
+Card represents a framed content surface in the current design vocabulary.
+
+The exact elevation meaning belongs to component and renderer conventions. The
+palette supplies roles but does not calculate shadows or z-order.
+
+Borders
+~~~~~~~
+
+Border is the default separator or outline. BorderHover strengthens an outline
+for pointer interaction, while BorderFocus communicates keyboard or focus state.
+A component should use BorderFocus consistently when indicating focus rather
+than inventing a one-off accent.
+
+Text Colors
+~~~~~~~~~~~
+
+TextPrimary is the strongest foreground hierarchy. TextSecondary supports less
+prominent content. TextMuted is for subdued supporting information. TextDisabled
+communicates unavailable controls and should be paired with appropriate state
+behavior, not used merely for decoration.
+
+Status Colors
+~~~~~~~~~~~~~
+
+Success, Warning, Error, and Info communicate semantic status. They should not be
+used only as arbitrary decoration when the interface needs a status meaning.
+Components may derive readable foreground variants separately when the status
+color is used as a filled surface.
+
+Typography
+----------
+
+Typography contains a family preference and nominal font sizes:
+
+- FontFamily.
+- H1Size.
+- H2Size.
+- H3Size.
+- H4Size.
+- BodySize.
+- SmallSize.
+- CodeSize.
+
+Sizes are expressed in logical pixels. The structure does not currently contain
+line-height, letter-spacing, font-style, or a separate weight scale. Components
+can provide those values through their own APIs or through future theme tokens.
+
+FontFamily is a string preference. The default uses a CSS-like fallback list:
+
+    Inter, system-ui, sans-serif
+
+Whether a renderer supports each family name is determined by the font and
+rendering layers. The theme stores the preference but does not load fonts.
+
+Default Typography
+------------------
+
+DefaultTypography currently uses:
+
+- H1Size: 32.
+- H2Size: 24.
+- H3Size: 20.
+- H4Size: 18.
+- BodySize: 14.
+- SmallSize: 12.
+- CodeSize: 13.
+
+These values are starting points, not enforced constraints. A component may
+choose a different size for a special control, but shared hierarchy should
+usually use the theme values.
+
+Spacing
+-------
+
+Spacing contains reusable logical-pixel distances:
+
+- XXS: 2.
+- XS: 4.
+- SM: 8.
+- MD: 12.
+- LG: 16.
+- XL: 24.
+- XXL: 32.
+
+The scale is intended for padding, margins, gaps, list spacing, and related
+layout distances. Names describe relative hierarchy rather than a mandatory
+meaning for one component.
+
+DefaultSpacing is a package-level value initialized with this scale. Assigning
+it to a Theme copies the Spacing struct's scalar fields into that Theme.
+
+Radii
+-----
+
+Radii contains reusable geom.CornerRadius values:
+
+- SM: uniform radius 4.
+- MD: uniform radius 8.
+- LG: uniform radius 12.
+- XL: uniform radius 16.
+- Full: uniform radius 9999.
+
+The Full value is a large radius commonly used to create pill-like shapes. The
+actual renderer and rectangle dimensions determine the visible result.
+
+CornerRadius supports per-corner values, so a future theme can replace a token
+with intentionally asymmetric corners without changing component call sites.
+
+DefaultRadii is a package-level value initialized with the standard scale.
+
+Theme
+-----
+
+Theme groups all design tokens for one visual mode:
+
+    type Theme struct {
+        IsDark     bool
+        Palette    Palette
+        Typography Typography
+        Spacing    Spacing
+        Radii      Radii
+    }
+
+IsDark identifies the intended mode. It is metadata and does not automatically
+recompute palette values. A custom Theme can set IsDark to either value while
+using any palette; callers should keep the flag and values consistent when that
+matters to their application.
+
+The remaining fields are value structs. Constructing a Theme with
+DefaultTypography, DefaultSpacing, or DefaultRadii copies those values into the
+Theme rather than sharing mutable pointers.
+
+Dark Theme
+----------
+
+Dark returns a new default dark Theme. Its palette uses deep background and
+surface values, light foreground text, blue primary actions, and semantic status
+colors suited to a dark interface.
+
+Important dark tokens include:
+
+- Background #0F172A.
+- Surface and Card #1E293B.
+- Primary #3B82F6.
+- TextPrimary #F8FAFC.
+- TextSecondary #CBD5E1.
+- Border #334155.
+
+Dark uses the package defaults for typography, spacing, and radii.
+
+Light Theme
+-----------
+
+Light returns a new default light Theme. Its palette uses a light background and
+white surfaces, dark foreground text, blue primary actions, and status colors
+suited to a light interface.
+
+Important light tokens include:
+
+- Background #F8FAFC.
+- Surface and Card #FFFFFF.
+- Primary #2563EB.
+- TextPrimary #0F172A.
+- TextSecondary #475569.
+- Border #E2E8F0.
+
+Light also uses the package defaults for typography, spacing, and radii.
+
+Constructors and Value Independence
+-----------------------------------
+
+Dark and Light return a newly allocated Theme pointer on every call. The Palette,
+Typography, Spacing, and Radii values are copied into that Theme. Mutating fields
+on one returned Theme does not mutate another Theme returned by a later call.
+
+The Color values inside Palette are also value structs. Updating a Color field on
+one Palette does not update a separate Palette value copied elsewhere.
+
+Current Global Theme
+--------------------
+
+currentTheme stores the process-wide active theme and is initialized to Dark.
+Current returns that pointer:
+
+    active := theme.Current()
+
+The returned pointer is the active object itself, not a defensive copy. Mutating
+its fields changes what other callers observe through Current.
+
+SetCurrent replaces the global pointer when given a non-nil Theme:
+
+    theme.SetCurrent(theme.Light())
+
+Passing nil is ignored, so the setter does not make Current return nil. SetCurrent
+does not merge tokens with the previous theme and does not clone the supplied
+pointer.
+
+Global State and Concurrency
+----------------------------
+
+The currentTheme pointer is package-level mutable state. The current implementation
+does not protect Current and SetCurrent with a mutex or atomic pointer.
+
+Applications should normally set the theme during initialization before starting
+concurrent UI work. If the theme must change while other goroutines read it,
+the application needs an external synchronization policy or the theme package
+needs a future synchronized implementation.
+
+Even if pointer replacement were synchronized, mutating fields through the
+returned Theme pointer concurrently with component reads would still require
+coordination. Treat an active Theme as immutable after publication when possible.
+
+Theme Switching
+---------------
+
+A typical mode switch is:
+
+    if useDark {
+        theme.SetCurrent(theme.Dark())
+    } else {
+        theme.SetCurrent(theme.Light())
+    }
+
+Changing the global pointer does not automatically mark existing windows or
+components dirty. The application must ensure that consumers read the new theme
+and request redraw or rebuild work according to its UI architecture.
+
+For isolated previews or tests, prefer passing a Theme pointer or value directly
+rather than changing the process-wide global state.
+
+Accessibility Considerations
+----------------------------
+
+The theme package supplies text and surface roles, but it does not validate
+contrast. Consumers should evaluate foreground/background combinations using the
+color package's luminance and contrast helpers, especially for body text,
+focused controls, disabled states, and status colors.
+
+TextDisabled should not be the only indication of state. Status colors should
+normally be paired with text, icons, or another non-color signal when the user
+must distinguish success, warning, error, or information.
+
+Custom Themes
+-------------
+
+A custom Theme can be built from a default and adjusted selectively:
+
+    custom := theme.Light()
+    custom.Palette.Primary = color.Hex("#0F766E")
+    custom.Spacing.MD = 14
+
+Starting from Light or Dark keeps all roles populated. Constructing Theme{}
+from scratch is valid Go but leaves zero colors, sizes, and radii unless the
+caller fills them explicitly.
+
+When changing one semantic role, review related states and foreground tokens.
+Changing Primary without checking PrimaryHover, PrimaryActive, and PrimaryText
+can create inconsistent interaction or contrast behavior.
+
+Token Ownership
+---------------
+
+Theme owns token values, but it does not own component rendering. Components read
+tokens and create render commands. Renderers consume colors and geometry later.
+
+The boundary is:
+
+    Theme tokens
+          |
+          v
+    component styling
+          |
+          v
+    render commands
+          |
+          v
+    renderer pixels
+
+Keeping token decisions in the theme and component layers prevents the renderer
+from needing to know whether a color came from a light or dark design system.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- Dark returns IsDark true.
+- Light returns IsDark false.
+- Both constructors populate all semantic palette roles.
+- Default spacing values match the documented scale.
+- Default radii use the expected uniform values.
+- Default typography values match the documented hierarchy.
+- Dark and Light use different mode-appropriate surfaces and text.
+- Current initially returns the default dark theme.
+- SetCurrent replaces the active pointer.
+- SetCurrent(nil) leaves the active theme unchanged.
+- Separate constructor results can be modified independently.
+- Custom theme changes do not alter package defaults.
+- Concurrent access follows the documented synchronization policy.
+
+Contrast tests should measure important foreground/background pairs rather than
+assuming that a token name guarantees accessibility.
+
+Maintenance Checklist
+---------------------
+
+When changing theme.go:
+
+1. Keep palette fields semantic and document their intended role.
+2. Update light and dark states together when adding a new role.
+3. Preserve spacing and radius scale meaning.
+4. Keep typography units and hierarchy clear.
+5. Document whether new values are copied or shared.
+6. Treat Current and SetCurrent as global mutable state.
+7. Keep nil setter behavior explicit.
+8. Review contrast when changing text, surface, or status colors.
+9. Mark consumers dirty when theme switching requires redraw.
+10. Add tests for new tokens and mode-specific behavior.
+
+Summary
+-------
+
+Nova's Theme type groups semantic palette colors, typography, spacing, and corner
+radii into one design-system configuration. Dark and Light provide complete
+default modes, while Current and SetCurrent expose a process-wide active theme.
+
+The package favors semantic roles and value-based token groups. Components use
+the tokens to construct styled UI, and renderers remain responsible for turning
+those choices into pixels. The main maintenance concerns are keeping related
+state tokens coherent, validating contrast, and coordinating global theme
+changes with concurrent readers and redraw behavior.
