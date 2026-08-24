@@ -1,0 +1,309 @@
+Nova Application Package Explanation
+====================================
+
+Purpose
+-------
+
+app/app.go defines App, the top-level lifecycle coordinator for a Nova
+application. It owns the list of configured windows, starts native windows,
+renders initial content, polls interaction events, redraws invalidated windows,
+and provides a way to request shutdown.
+
+App is intentionally a coordinator rather than a renderer or widget tree. The
+window.Window type owns each window's UI state and rendering details. The
+platform package creates native operating-system windows. App connects those
+pieces into one application lifecycle.
+
+Application State
+-----------------
+
+App stores:
+
+    mu      sync.Mutex
+    windows []*window.Window
+    running bool
+
+mu protects the application registry and running flag during operations that
+mutate or snapshot them. windows contains the Window values registered through
+App.Window. running controls whether the native event-pump loop continues.
+
+The application keeps pointers to windows because each Window owns mutable UI,
+layout, rendering, and native-handle state. App manages membership and lifecycle
+but does not duplicate that per-window state.
+
+Creating an App
+---------------
+
+New returns an App with an empty window slice and initial capacity for four
+windows:
+
+    app := app.New()
+
+The capacity is an allocation hint, not a limit. Registering more than four
+windows grows the slice normally.
+
+The running flag starts false. It becomes true when Run begins and becomes false
+when Quit is called or when the current lifecycle naturally stops.
+
+Registering Windows
+-------------------
+
+Window creates a new window.Window using the supplied WindowOption functions,
+then appends it to the application's registry under the mutex.
+
+Native window creation is deliberately deferred until Run. This allows callers
+to configure titles, sizes, components, themes, callbacks, and other options
+before platform resources are requested.
+
+A typical setup is:
+
+    application := app.New()
+    mainWindow := application.Window(
+        window.WithTitle("Nova"),
+        window.WithSize(800, 600),
+    )
+
+The exact available options belong to the window package. App only forwards
+them to window.NewWindow and registers the result.
+
+Window Registry
+---------------
+
+Windows returns the currently registered window slice while holding the mutex.
+The current implementation returns the internal slice rather than a defensive
+copy. Callers should treat the returned slice as read-only and should not modify
+its length or elements.
+
+Because the slice is internal, retaining it across later calls to Window can
+expose normal Go slice aliasing behavior. Code that needs a stable snapshot
+should copy the returned slice while coordinating with the application's
+lifecycle.
+
+Run Lifecycle
+-------------
+
+Run performs these broad stages:
+
+1. Mark the application as running.
+2. Copy the registered window slice into a stable local snapshot.
+3. Create a native platform window for each configured Window.
+4. Attach each successfully created native window.
+5. Render an initial frame for every configured Window.
+6. Enter the native event and redraw loop when at least one native window exists.
+7. Stop when Quit is requested, every native window closes, or polling reports
+   that no native window remains open.
+
+The window snapshot means the current Run invocation processes the windows that
+were registered before startup. A window registered later is not added to the
+local loop snapshot and would require another lifecycle decision before it can
+participate in native polling.
+
+Native Window Creation
+----------------------
+
+For each registered Window, Run obtains its title and logical size, converts the
+size to integers, and calls platform.CreatePlatformWindow.
+
+When creation succeeds and returns a non-nil native window:
+
+- Window.AttachNative stores the native handle.
+- hasNative becomes true.
+- The window participates in event polling and redraw checks.
+
+If platform creation returns an error or nil handle, the current implementation
+does not return that error immediately. It continues initializing other windows
+and still calls RenderFrame on the affected Window. This behavior allows
+headless or partially unavailable environments to complete the setup path, but
+it also means callers do not receive detailed native-creation failures from Run.
+
+Initial Rendering
+-----------------
+
+Run calls RenderFrame once for every registered Window after attempting native
+creation. This gives a newly created native window content before the event loop
+begins.
+
+The initial render also occurs when native creation fails. In that case it can
+still prepare the Window's command and pixel state for headless operation or
+later use, depending on the Window implementation.
+
+Native Event Loop
+-----------------
+
+The event loop runs only if at least one native window was successfully created.
+Each iteration checks the running flag, then visits every Window in the startup
+snapshot.
+
+For each Window with a native handle:
+
+1. PollEvents drains pending native input and window events.
+2. A true result marks that at least one native window remains open.
+3. NeedsRedraw determines whether a new frame is required.
+4. RenderFrame runs only for dirty windows.
+
+This avoids rendering every window on every iteration when no state has changed.
+It also lets multiple windows share one application loop while keeping redraw
+work localized.
+
+The loop sleeps for 8 milliseconds after an iteration that still has an open
+window. This prevents a tight busy loop while maintaining a reasonably frequent
+polling cadence. The actual responsiveness also depends on the native backend,
+rendering cost, and callback work.
+
+Window Closure
+-------------
+
+A native window's PollEvents method returns false after its close request is
+processed. App does not itself destroy the native handle in the loop; the Window
+or native backend owns that cleanup according to its implementation.
+
+If every native window returns false or no native window remains attached,
+anyOpen stays false and Run breaks out of the loop. This provides natural
+termination when the user closes the last application window.
+
+Quit
+----
+
+Quit acquires the application mutex and sets running to false. It is intended as
+a request to stop the active Run loop.
+
+When called from another goroutine, the loop observes the flag between event
+polling iterations. The current iteration completes its in-progress callback or
+render operation before Run returns.
+
+Quit does not directly close native windows, clear the registry, or destroy
+window state. It controls application-loop termination; resource cleanup remains
+with the Window and platform layers.
+
+Concurrency
+-----------
+
+App protects its own windows slice and running flag with mu. Window methods have
+their own synchronization rules and should not be assumed safe merely because
+App uses a mutex.
+
+Run copies the window slice while holding the mutex, then releases it before
+performing platform creation and rendering. This avoids holding the application
+lock across potentially expensive native or user-code operations.
+
+The local windows snapshot is stable for the current Run call, but the Window
+objects themselves remain shared pointers. If another goroutine mutates a
+Window while Run renders or polls it, safety depends on Window's own locking and
+lifecycle guarantees.
+
+Headless and Native Modes
+-------------------------
+
+The lifecycle distinguishes whether any native window was created:
+
+- If hasNative is false, Run performs initialization and initial rendering, then
+  returns without entering an OS event loop.
+- If hasNative is true, Run continuously polls and redraws until termination.
+
+This makes the application coordinator usable in environments without a native
+display, provided the downstream Window and renderer layers support that mode.
+The exact build-time platform selection belongs to the platform package.
+
+Error Handling
+--------------
+
+Run currently returns error but does not produce an error from its own control
+flow. Native creation errors are ignored after the failed window attempt, and
+the loop itself returns nil.
+
+This is a simple lifecycle contract, but applications that need to distinguish
+missing displays, failed native windows, or rendering failures may need a future
+error aggregation policy. Possible policies include returning the first native
+error, collecting all per-window errors, or exposing a callback for startup
+failures.
+
+Window Ownership Boundaries
+---------------------------
+
+App owns:
+
+- The registry of configured Window pointers.
+- The application running flag.
+- The ordering in which windows are initialized and polled.
+- The decision to continue or stop the shared lifecycle loop.
+
+Window owns:
+
+- Window configuration after construction.
+- UI component and layout state.
+- Render command and framebuffer preparation.
+- The attached native-window reference and per-window callbacks.
+
+Platform owns:
+
+- Native display and operating-system window creation.
+- Native event polling and close signaling.
+- Backend-specific resource cleanup.
+
+Keeping these boundaries clear prevents App from becoming coupled to rendering
+or operating-system details.
+
+Typical Lifecycle Example
+-------------------------
+
+    application := app.New()
+    application.Window(window.WithTitle("Main"))
+    application.Window(window.WithTitle("Inspector"))
+
+    if err := application.Run(); err != nil {
+        log.Fatal(err)
+    }
+
+Run initializes both windows, performs their first renders, then services both
+from one event loop. A callback or another goroutine can call application.Quit
+to request termination.
+
+Testing Guidance
+----------------
+
+Useful application-level tests include:
+
+- New creates an empty registry and a stopped application.
+- Window registers and returns the configured Window.
+- Windows reports registered windows in insertion order.
+- Run snapshots the registered windows before startup work.
+- Initial RenderFrame is called for every configured window.
+- Native creation success attaches a handle and enables polling.
+- Native creation failure does not prevent other windows from initializing.
+- NeedsRedraw controls subsequent frame rendering.
+- A false PollEvents result allows the loop to stop when no windows remain.
+- Quit changes the running state and causes Run to terminate.
+- Concurrent Window and Quit operations do not corrupt App state.
+
+Because Run interacts with platform and Window behavior, tests may use a fake
+platform or focused lower-level tests. The current code calls the platform
+package directly, so introducing a test seam would require an explicit design
+change rather than hidden global substitution.
+
+Maintenance Checklist
+---------------------
+
+When changing app.go:
+
+1. Keep window registration protected by mu.
+2. Snapshot windows before long-running startup work.
+3. Preserve initial rendering before event polling.
+4. Poll only windows with attached native handles.
+5. Render only windows that report NeedsRedraw when inside the loop.
+6. Keep Quit limited to application-loop state unless cleanup is intentional.
+7. Document native creation error policy.
+8. Avoid holding the App mutex across callbacks, rendering, or platform calls.
+9. Define behavior for windows added after Run starts.
+10. Keep App focused on lifecycle coordination rather than rendering details.
+
+Summary
+-------
+
+App is Nova's top-level lifecycle coordinator. It registers Window objects,
+creates native counterparts at startup, renders initial frames, polls events,
+redraws dirty windows, and stops when requested or when all native windows close.
+
+Its synchronization protects the registry and lifecycle flag, while the stable
+Run snapshot keeps one invocation predictable. Native creation and rendering
+errors are currently tolerated, and Quit requests loop termination without
+performing direct resource cleanup.
