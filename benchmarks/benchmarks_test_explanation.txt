@@ -1,0 +1,312 @@
+Nova Benchmarks Explanation
+===========================
+
+Purpose
+-------
+
+benchmarks/benchmarks_test.go contains Go benchmarks for several important Nova
+workloads. Each Benchmark function follows Go's testing.Benchmark convention:
+the framework chooses b.N and repeats the timed body to estimate throughput and
+allocation behavior.
+
+The file measures five areas:
+
+- Application startup and component mounting.
+- Flex layout with 1,000 children.
+- Reactive state mutation and derived-value evaluation.
+- Virtualized visible-range calculation across 100,000 rows.
+- Repeated render-command recording for a 500-command batch.
+
+These benchmarks are workload probes, not correctness tests. Their purpose is
+to make performance changes visible and provide repeatable scenarios for
+profiling.
+
+Go Benchmark Model
+------------------
+
+A benchmark receives *testing.B. The testing package controls b.N and may run
+the benchmark body multiple times during calibration. The body should perform
+the operation being measured once per iteration:
+
+    for i := 0; i < b.N; i++ {
+        operation()
+    }
+
+The framework reports time per operation and can report allocations when run
+with appropriate Go test flags.
+
+b.ResetTimer
+------------
+
+The benchmarks call b.ResetTimer after preparing reusable setup data. This tells
+the testing framework to exclude that preparation from the measured interval.
+
+Resetting the timer is appropriate when setup is not the workload of interest.
+It is not used in BenchmarkAppStartupAndMount because constructing the App,
+window, and component tree is specifically the startup behavior that benchmark
+measures.
+
+BenchmarkAppStartupAndMount
+---------------------------
+
+This benchmark measures one application startup cycle per iteration:
+
+1. Create a new Nova App.
+2. Create and register a 1024 by 768 Window.
+3. Build a small column containing text and a button.
+4. Mount that content into the window.
+5. Run the application lifecycle.
+
+A fresh App is created every iteration so state, registered windows, and mounted
+components do not leak from one startup into the next.
+
+The benchmark includes app.Run because the startup lifecycle is part of the
+measured scenario. In a headless or unavailable-display environment, Run may
+return without entering a native event loop. That makes this benchmark's result
+environment-dependent: native display availability can change what startup
+includes.
+
+When comparing results, record whether the benchmark ran with a native display,
+headless configuration, or a mocked platform. Do not compare numbers from
+different execution modes as though they measured identical work.
+
+This benchmark does not isolate individual costs such as window construction,
+component tree creation, layout, or first rendering. Use focused benchmarks for
+those questions.
+
+BenchmarkFlexLayout1000Children
+-------------------------------
+
+This benchmark measures flex-layout computation for 1,000 vertically arranged
+children.
+
+Setup creates a slice of 1,000 FlexChildInput values. Every child has:
+
+- Flex set to zero.
+- A measurement callback returning Size(100, 30).
+
+The constraints are tight at 1000 by 30000. The configuration uses vertical
+main-axis layout, MainStart alignment, and centered cross-axis alignment.
+
+Setup occurs before b.ResetTimer. The timed operation is therefore:
+
+    layout.ComputeFlex(constraints, cfg, children)
+
+The fixed child measurement result makes the workload deterministic and keeps
+the benchmark focused on flex distribution, positioning, and result creation.
+It does not measure expensive or variable child measurement logic.
+
+The benchmark is useful for detecting regressions in large list-like layouts.
+The chosen 1,000-child workload is intentionally substantial but still small
+enough to execute frequently during benchmark calibration.
+
+BenchmarkReactiveStateMutation
+------------------------------
+
+This benchmark measures a source-state mutation followed by reading a computed
+value:
+
+    val := state.Int(0)
+    derived := state.Compute(func() string {
+        return fmt.Sprintf("Val: %d", val.Get())
+    })
+
+Each timed iteration performs:
+
+1. val.Set(i).
+2. derived.Get().
+
+Reading derived is important. It forces the benchmark to include the reactive
+invalidation and recomputation path rather than measuring only the setter.
+The formatted string also includes the cost of producing the derived value.
+
+The state and computed value are created before ResetTimer and reused through the
+benchmark. This represents repeated updates to one live reactive graph rather
+than repeated graph construction.
+
+Potential interpretation issue: the loop writes a changing value each time, so
+an implementation that caches equal values is not being tested for no-op writes.
+A separate benchmark could repeatedly set the same value to measure equality
+short-circuit behavior.
+
+BenchmarkVirtualizer100kRows
+----------------------------
+
+This benchmark measures visible-range calculation for a virtualized data set of
+100,000 rows. The virtualizer uses a row extent of 32 logical units.
+
+The timed call is:
+
+    v.ComputeVisibleRange(scrollOffset, viewportHeight)
+
+The viewport height remains 768. The scroll offset changes by 32 units and wraps
+at 10,000 rows using i % 10000. This causes repeated iterations to examine many
+positions while avoiding unbounded offset growth during a long benchmark run.
+
+Only range calculation is measured. The benchmark does not construct row
+widgets, fetch data, layout visible rows, or render them. This isolates the
+virtualizer's arithmetic and boundary logic.
+
+The 100,000-row count primarily tests that the algorithm depends on visible
+range and row metrics rather than scanning every row. A good virtualizer should
+remain efficient as total row count grows when the viewport remains fixed.
+
+BenchmarkRenderPipelineBatch
+----------------------------
+
+This benchmark measures repeated render-command recording for a 500-command
+workload.
+
+Before timing, it creates a CommandBuffer and Canvas, then records 500 rounded
+rectangles. That initial batch establishes the objects and likely command-slice
+capacity.
+
+Each timed iteration:
+
+1. Clears the CommandBuffer.
+2. Records 500 filled rectangles through Canvas.FillRect.
+
+Clear retains the command slice's backing storage, so the repeated workload
+focuses on clearing, Canvas command construction, coordinate handling, and
+append throughput rather than repeated buffer allocation after warm-up.
+
+The initial setup uses rounded rectangles, while the timed body uses ordinary
+rectangles. This is intentional in the current source but means setup does not
+itself represent the exact timed command type. The measured operation is the
+500 FillRect recording pass.
+
+The benchmark does not execute commands in a renderer or measure pixel output.
+It measures command generation and buffer reuse only.
+
+Workload Isolation
+------------------
+
+The benchmarks use three setup strategies:
+
+- Per-iteration setup for startup behavior.
+- One-time setup for fixed layout, reactive, and virtualization inputs.
+- One-time object setup plus per-iteration buffer reuse for command recording.
+
+These choices define what each number means. Before changing setup placement,
+decide whether the allocation or construction is part of the performance
+question.
+
+A benchmark that moves setup outside the timed loop may become faster while no
+longer measuring the same user-visible workflow. A benchmark that moves all
+setup inside may measure allocation noise instead of the algorithm under study.
+
+Allocation and Garbage Collection
+---------------------------------
+
+Go benchmarks can report allocations with commands such as:
+
+    go test ./benchmarks -bench . -benchmem
+
+Allocation counts are especially relevant here because the workloads may create:
+
+- Window and component objects.
+- Layout results and temporary slices.
+- Formatted strings from reactive computation.
+- Command values and slice growth.
+
+Garbage-collection timing can affect results. Run enough iterations for the
+benchmark framework to stabilize, and compare multiple runs when investigating
+small changes.
+
+Benchmark Environment
+---------------------
+
+Record relevant environment details with performance results:
+
+- Go version.
+- Operating system and architecture.
+- CPU and available cores.
+- Whether a native display is available.
+- Build tags such as headless mode.
+- Compiler flags or race detector usage.
+- Whether other workloads are running.
+
+Native application startup is particularly sensitive to display and platform
+conditions. Layout, state, virtualization, and command-buffer benchmarks are
+more isolated but can still vary with CPU frequency and system load.
+
+Correctness Versus Performance
+------------------------------
+
+Benchmarks should not replace unit tests. A benchmark may complete successfully
+while producing incorrect layout, state, range, or command results. Keep focused
+correctness tests near each package and use benchmark code only to measure the
+workload.
+
+When changing an implementation, first confirm correctness, then compare
+benchmark results under the same conditions. A faster incorrect result is not a
+performance improvement.
+
+Running the Benchmarks
+----------------------
+
+Typical commands include:
+
+    go test ./benchmarks -bench .
+    go test ./benchmarks -bench BenchmarkFlexLayout1000Children -benchmem
+    go test ./benchmarks -bench BenchmarkRenderPipelineBatch -count 5
+
+Use -run '^$' when you want to skip ordinary tests in a package that contains
+both tests and benchmarks:
+
+    go test ./benchmarks -run '^$' -bench .
+
+Use a focused benchmark name when investigating one subsystem. Use repeated
+runs with -count when comparing small changes, and keep the machine conditions
+consistent.
+
+Profiling Guidance
+------------------
+
+For CPU or memory investigations, add profiling flags to the Go benchmark
+command. Focus first on the benchmark that shows the regression, then inspect
+the owning implementation.
+
+Examples of questions these benchmarks can answer:
+
+- Did component startup allocate more after a lifecycle change?
+- Did flex layout become slower for large child lists?
+- Did derived-state reads begin recomputing unnecessarily?
+- Does visible-range calculation remain independent of total row count?
+- Did command recording lose buffer reuse or introduce extra allocations?
+
+Benchmark Maintenance
+---------------------
+
+When changing a benchmark:
+
+1. Keep its name descriptive and stable when historical comparisons matter.
+2. Document what is inside and outside the timed region.
+3. Use b.ResetTimer deliberately.
+4. Avoid unused results being optimized away; consume returned values as needed.
+5. Keep workload sizes representative and explain unusual constants.
+6. Separate correctness setup from measured work.
+7. Recheck whether native display state affects lifecycle benchmarks.
+8. Run benchmark comparisons under matching environments.
+9. Add a focused benchmark when one existing benchmark mixes too many costs.
+10. Keep correctness assertions in tests rather than benchmark timing loops.
+
+Known Repository Dependency Note
+--------------------------------
+
+The benchmark package imports the public application and rendering stack. If a
+transitive renderer package is unavailable in the workspace, the benchmark
+package may fail during setup before any benchmark runs. That is a repository
+build configuration issue, not a benchmark result.
+
+Summary
+-------
+
+The benchmark suite measures representative Nova workloads across lifecycle,
+layout, reactivity, virtualization, and command recording. Its most important
+semantic detail is the timed boundary: startup includes setup by design, while
+the other benchmarks prepare stable inputs before ResetTimer.
+
+Use these benchmarks for regression detection and profiling, keep environment
+conditions consistent, and pair all performance conclusions with correctness
+tests and clear knowledge of which work the benchmark actually includes.
