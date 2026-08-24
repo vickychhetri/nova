@@ -1,0 +1,533 @@
+Nova Geometry Package Explanation
+=================================
+
+Purpose
+-------
+
+core/geom/geom.go provides Nova's foundational two-dimensional geometry types
+and operations. It is used by layout, rendering, input, widgets, and platform
+integration code.
+
+The package defines:
+
+- Point for coordinates and vector-like operations.
+- Size for non-negative dimensions.
+- Rect for axis-aligned bounds.
+- Insets for top, right, bottom, and left distances.
+- CornerRadius for rounded rectangle corners.
+- Matrix2D for affine transformations.
+
+The functions are value-oriented. Most operations return a new value and do not
+mutate their receiver or arguments. This makes geometry values convenient to
+pass through layout and rendering pipelines.
+
+Coordinate Model
+----------------
+
+Nova geometry uses floating-point coordinates. Point stores X and Y, Rect stores
+a top-left origin plus Width and Height, and Size stores Width and Height.
+
+Rect edges are derived:
+
+    left   = X
+    right  = X + Width
+    top    = Y
+    bottom = Y + Height
+
+The package generally assumes axis-aligned rectangles with non-negative
+ dimensions. Constructors clamp negative dimensions, while manually constructed
+values are not automatically normalized.
+
+Point
+-----
+
+Point represents a coordinate or two-dimensional vector:
+
+    type Point struct {
+        X float64
+        Y float64
+    }
+
+Pt creates a point from x and y values. It does not clamp or normalize them;
+negative and fractional coordinates are valid and useful for transforms,
+scrolling, and layout calculations.
+
+Add and Sub
+-----------
+
+Add performs component-wise addition:
+
+    p.Add(q) = (p.X + q.X, p.Y + q.Y)
+
+It is commonly used to apply an offset or combine positions.
+
+Sub performs component-wise subtraction:
+
+    p.Sub(q) = (p.X - q.X, p.Y - q.Y)
+
+Subtracting two positions produces a displacement vector. Subtracting an offset
+from a position converts a translated point back into a local coordinate space.
+
+Scale
+-----
+
+Scale multiplies both coordinates by one factor:
+
+    p.Scale(s) = (p.X * s, p.Y * s)
+
+Scaling is relative to the origin. A negative factor reflects the point through
+the origin, zero maps it to the origin, and one leaves it unchanged.
+
+Distance
+--------
+
+Distance returns Euclidean distance using math.Hypot:
+
+    distance = sqrt((p.X-q.X)^2 + (p.Y-q.Y)^2)
+
+math.Hypot provides a numerically stable implementation for the two-dimensional
+case. Distance is useful for hit testing, gestures, layout constraints, and
+shape calculations.
+
+Point String Form
+-----------------
+
+Point.String returns a compact debug representation with one decimal place:
+
+    Point(12.3, 45.6)
+
+The string is intended for logs and diagnostics, not lossless serialization.
+
+Size
+----
+
+Size represents dimensions:
+
+    type Size struct {
+        Width  float64
+        Height float64
+    }
+
+Sz creates a Size and clamps negative width and height to zero. This makes it
+appropriate for layout results where dimensions must not become negative.
+
+Size does not clamp positive infinity or NaN. Those values can be meaningful as
+layout constraints in some systems, though callers should define how they are
+handled before passing them to pixel-oriented code.
+
+IsZero
+------
+
+IsZero returns true when both dimensions are non-positive:
+
+    Width <= 0 && Height <= 0
+
+The method therefore considers negative dimensions zero-like even though Sz
+would normalize them to zero. It does not report true when only one dimension is
+zero and the other is positive.
+
+IsInfinite
+----------
+
+IsInfinite reports whether Width or Height is positive infinity. It uses
+math.IsInf(value, 1), so negative infinity is not treated as positive infinity.
+
+This is useful for detecting unbounded layout constraints. It does not identify
+NaN or finite very large values.
+
+Clamp
+-----
+
+Clamp restricts each dimension between corresponding min and max dimensions:
+
+    result.Width  = max(min.Width,  min(max.Width,  s.Width))
+    result.Height = max(min.Height, min(max.Height, s.Height))
+
+The operation assumes min is not greater than max for each dimension. If that
+precondition is violated, the nested max/min expression still returns a value,
+but it may not match a meaningful interval policy.
+
+Size String Form
+----------------
+
+Size.String returns a compact one-decimal representation:
+
+    Size(100.0 x 50.0)
+
+Like Point.String, it is intended for readable diagnostics rather than exact
+serialization.
+
+Rect
+----
+
+Rect represents an axis-aligned rectangle:
+
+    type Rect struct {
+        X      float64
+        Y      float64
+        Width  float64
+        Height float64
+    }
+
+X and Y identify the top-left origin. Width and Height describe extent. NewRect
+clamps negative dimensions to zero, preserving the origin.
+
+RectFromPoints
+--------------
+
+RectFromPoints creates the smallest axis-aligned rectangle containing two
+points. It uses min for the origin and max for the opposite edge, so the point
+order does not matter.
+
+For p1=(10, 20) and p2=(2, 5), the result is:
+
+    X      = 2
+    Y      = 5
+    Width  = 8
+    Height = 15
+
+The result has zero width or height when the points share an x or y coordinate.
+
+Origin and Size
+---------------
+
+Origin returns (X, Y) as a Point. Size returns Width and Height as a Size.
+Both return values and do not create a connection to the original rectangle.
+
+Edge Accessors
+--------------
+
+MinX and MinY return the top-left edges. MaxX and MaxY calculate the opposite
+edges by addition:
+
+    MaxX = X + Width
+    MaxY = Y + Height
+
+These accessors centralize edge calculations and make intersection and
+containment expressions easier to read.
+
+Center
+------
+
+Center returns the rectangle midpoint:
+
+    center.X = X + Width / 2
+    center.Y = Y + Height / 2
+
+For an empty rectangle, the center is still calculated from its origin and zero
+extent. It is not automatically replaced with a special invalid point.
+
+ContainsPoint
+-------------
+
+ContainsPoint includes the rectangle boundary:
+
+    MinX <= p.X <= MaxX
+    MinY <= p.Y <= MaxY
+
+A point exactly on an edge or corner is considered contained. This is often
+appropriate for hit testing, though callers may want strict interior behavior
+for adjacent shapes where shared boundaries need a tie-breaking rule.
+
+ContainsRect
+------------
+
+ContainsRect reports true when every edge of other lies inside or on the edges
+of r. Coincident rectangles contain one another. An empty rectangle may be
+considered contained when its degenerate edges satisfy the comparisons.
+
+Intersects
+----------
+
+Intersects reports positive-area overlap using strict edge comparisons:
+
+    r.MinX < other.MaxX
+    r.MaxX > other.MinX
+    r.MinY < other.MaxY
+    r.MaxY > other.MinY
+
+Rectangles that only touch at an edge or corner do not intersect. This differs
+from ContainsPoint, which includes boundaries. The distinction is important for
+layout adjacency, collision detection, and clipping.
+
+Intersection
+------------
+
+Intersection calculates the overlapping rectangle by taking the greater left and
+top edges and the smaller right and bottom edges:
+
+    minX = max(r.MinX, other.MinX)
+    minY = max(r.MinY, other.MinY)
+    maxX = min(r.MaxX, other.MaxX)
+    maxY = min(r.MaxY, other.MaxY)
+
+If maxX <= minX or maxY <= minY, it returns a zero Rect. Thus edge-only contact
+is represented as no positive-area intersection.
+
+Union
+-----
+
+Union returns the smallest axis-aligned rectangle containing both inputs. It
+uses minimum left/top edges and maximum right/bottom edges.
+
+A rectangle with both Width and Height equal to zero is treated as an empty
+sentinel. If one input is such a rectangle, Union returns the other input. This
+special case is convenient for incremental bounds accumulation but means a
+zero-size rectangle with a meaningful position is not treated as a point that
+expands the union.
+
+Inset
+-----
+
+Inset moves each edge inward by the corresponding Insets value:
+
+    new.X      = X + Left
+    new.Y      = Y + Top
+    new.Width  = max(0, Width - Left - Right)
+    new.Height = max(0, Height - Top - Bottom)
+
+Width and height clamp to zero when the insets exceed the available extent.
+The origin still moves by Left and Top, so excessive insets can produce a
+zero-size rectangle positioned beyond the original center.
+
+Negative insets expand the rectangle in the corresponding direction. This is
+used by code such as shadow generation, where an expansion can be represented
+with negative inset values.
+
+Offset
+------
+
+Offset changes only the rectangle origin:
+
+    new.X = X + dx
+    new.Y = Y + dy
+
+Width and Height are preserved. Offset is useful for translating local widget
+bounds into parent or window coordinates.
+
+Insets
+------
+
+Insets stores four independent distances:
+
+    Top, Right, Bottom, Left
+
+The type can represent padding, margin, border thickness, or any other edge
+specific expansion/contraction. It does not clamp values, so negative distances
+are valid for expansion operations.
+
+Constructors
+------------
+
+All creates the same value on all four sides. Symmetric takes vertical and
+horizontal values and assigns them to top/bottom and left/right respectively.
+TRBL accepts explicit top, right, bottom, and left values in that order.
+
+These constructors make call sites readable and reduce mistakes when assigning
+repeated edge values.
+
+Horizontal and Vertical
+-----------------------
+
+Horizontal returns Left + Right. Vertical returns Top + Bottom. Rect.Inset uses
+these totals to calculate the remaining width and height.
+
+CornerRadius
+------------
+
+CornerRadius stores a radius independently for each rounded-rectangle corner:
+
+- TopLeft.
+- TopRight.
+- BottomRight.
+- BottomLeft.
+
+The values are not clamped or normalized by the type. Renderers may clamp radii
+to the shape bounds, and callers can choose whether negative radii are valid for
+their use case.
+
+RadiusUniform sets all four values to the same radius. RadiusSeparate accepts
+values in clockwise top-left, top-right, bottom-right, bottom-left order.
+
+Matrix2D
+--------
+
+Matrix2D represents a two-dimensional affine transform in column-vector form:
+
+    [ A  C  Tx ]
+    [ B  D  Ty ]
+    [ 0  0  1  ]
+
+For point (x, y), the transformed coordinates are:
+
+    x' = A*x + C*y + Tx
+    y' = B*x + D*y + Ty
+
+The six stored values are enough for translation, scaling, rotation, shear,
+and combinations of those operations. The implicit final row keeps the
+transformation affine and does not need to be stored.
+
+IdentityMatrix
+--------------
+
+IdentityMatrix returns:
+
+    [ 1  0  0 ]
+    [ 0  1  0 ]
+    [ 0  0  1 ]
+
+Transforming a point by identity returns the same coordinates. Identity is the
+neutral element for Multiply.
+
+TranslationMatrix
+-----------------
+
+TranslationMatrix sets A and D to one and stores tx and ty in Tx and Ty. It
+leaves the linear portion unchanged and moves every point by the same offset.
+
+ScaleMatrix
+-----------
+
+ScaleMatrix sets the diagonal linear values to sx and sy. It scales x and y
+independently around the origin and does not translate.
+
+A zero scale collapses one axis. A negative scale reflects that axis.
+
+RotationMatrix
+--------------
+
+RotationMatrix accepts radians and creates the standard counterclockwise
+rotation:
+
+    [ cos(angle)  -sin(angle)  0 ]
+    [ sin(angle)   cos(angle)  0 ]
+    [ 0            0           1 ]
+
+An angle of zero is identity. Positive angles rotate counterclockwise in the
+mathematical coordinate convention. Whether screen coordinates visually make
+that direction appear clockwise depends on the coordinate system used by the
+caller, especially when y increases downward.
+
+Transform
+---------
+
+Transform applies all matrix components to a Point using the affine equations.
+It returns a new Point and does not mutate either value.
+
+Multiply
+--------
+
+Multiply returns m * other using standard matrix composition. With the package's
+Transform method:
+
+    (m.Multiply(other)).Transform(p)
+
+is equivalent to:
+
+    m.Transform(other.Transform(p))
+
+Therefore other is applied first and m is applied second. This order matters
+when combining translation, rotation, and scaling because affine transforms are
+not generally commutative.
+
+For example, scaling then translating differs from translating then scaling:
+
+    TranslationMatrix(10, 0).Multiply(ScaleMatrix(2, 2))
+
+scales the point first and then adds ten to x, while the reverse composition
+also scales the translation.
+
+Geometry and Rendering
+----------------------
+
+Rendering code commonly uses these types as follows:
+
+- Point positions become command P1 and P2 values.
+- Rect bounds become fill, stroke, image, shadow, or clip geometry.
+- Size describes layout and framebuffer dimensions.
+- Insets calculate content areas from outer bounds.
+- CornerRadius describes rounded primitive corners.
+- Matrix2D describes transform scopes.
+
+The geometry package does not rasterize shapes or perform hit testing by itself.
+It provides the calculations that those higher-level systems use.
+
+Floating-Point Considerations
+-----------------------------
+
+All geometry uses float64. Equality checks on calculated values can be sensitive
+to rounding. For approximate comparisons, callers should use a tolerance suited
+to the operation and coordinate scale.
+
+Constructors clamp dimensions but do not sanitize NaN or infinity. Geometry
+consumers that convert values to integers or pixels should validate those values
+before conversion.
+
+Zero Values
+-----------
+
+The zero values are predictable:
+
+- Point{} is the origin.
+- Size{} has zero dimensions.
+- Rect{} is a zero rectangle at the origin.
+- Insets{} applies no edge distances.
+- CornerRadius{} has square corners.
+- Matrix2D{} is not identity; all six fields are zero.
+
+Use IdentityMatrix rather than Matrix2D{} when an identity transform is needed.
+This distinction is especially important because a zero Matrix2D collapses all
+points to the origin rather than leaving them unchanged.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- Point addition, subtraction, scaling, and distance.
+- Sz clamping negative dimensions.
+- Size zero and infinity checks.
+- Size clamping between minimum and maximum sizes.
+- Rect construction and point-order-independent RectFromPoints.
+- Edge, center, containment, and offset calculations.
+- Boundary inclusion for ContainsPoint.
+- Edge-touch exclusion for Intersects and Intersection.
+- Union behavior with empty rectangles.
+- Inset clamping and negative expansion.
+- Insets constructor ordering and totals.
+- Uniform and separate corner radii.
+- Identity, translation, scale, and rotation transforms.
+- Matrix multiplication order.
+- Zero Matrix2D versus IdentityMatrix behavior.
+
+Tests should include fractional values and negative coordinates because layout
+and rendering frequently operate away from integer pixel boundaries.
+
+Maintenance Checklist
+---------------------
+
+When changing geom.go:
+
+1. Keep coordinate and edge conventions explicit.
+2. Preserve boundary semantics for containment versus intersection.
+3. Keep constructors' clamping behavior stable unless intentionally changed.
+4. Document whether new operations mutate or return values.
+5. Preserve matrix multiplication order and transform equations.
+6. Distinguish zero-value Matrix2D from identity.
+7. Handle NaN and infinity intentionally at pixel conversion boundaries.
+8. Add tests for degenerate rectangles and fractional geometry.
+9. Keep geometry calculations independent from renderer backends.
+10. Update dependent layout and rendering documentation when semantics change.
+
+Summary
+-------
+
+Nova's geometry package supplies reusable value types for coordinates, sizes,
+rectangles, edge insets, rounded corners, and affine transforms. Rectangles use
+top-left origin plus dimensions, point containment includes boundaries, and
+rectangle intersection requires positive area.
+
+The package favors simple value-returning operations and explicit conventions.
+Its geometry values form the shared language between layout, input, rendering,
+and platform code, while higher layers decide how those values are hit-tested,
+rasterized, or transformed in a complete UI pipeline.
