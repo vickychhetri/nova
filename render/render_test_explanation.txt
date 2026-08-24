@@ -1,0 +1,253 @@
+Render Test Explanation
+=======================
+
+Purpose
+-------
+
+render/render_test.go contains a focused integration test for the relationship
+between Canvas and CommandBuffer. The test does not render pixels or open a
+native window. Instead, it verifies that Canvas creates the expected ordered
+commands and that CommandBuffer stores and clears them correctly.
+
+The test uses package render_test rather than package render. This is deliberate:
+it exercises the public API as an external caller would use it and avoids
+relying on unexported implementation details.
+
+Tested Components
+-----------------
+
+The test covers three public pieces of behavior:
+
+- render.NewCommandBuffer creates an empty command buffer.
+- render.NewCanvas records drawing operations into that buffer.
+- CommandBuffer.Commands, Len, and Clear expose and manage the recorded list.
+
+It also checks Canvas's public coordinate-state behavior:
+
+- Drawing before translation keeps the original coordinates.
+- Translate shifts later geometry.
+- Save and Restore scope the translation state.
+- Save and Restore do not create drawing commands.
+
+Test Setup
+----------
+
+The test begins with:
+
+    buf := render.NewCommandBuffer()
+    canvas := render.NewCanvas(buf)
+
+NewCommandBuffer supplies the destination for recorded commands. NewCanvas
+receives that buffer and starts with a zero coordinate offset.
+
+Using constructors rather than manually creating structs ensures the test covers
+the supported public setup path. It also keeps the test resilient to internal
+field changes such as slice capacity or Canvas stack representation.
+
+First Command: Untranslated Rectangle
+--------------------------------------
+
+The test records:
+
+    canvas.FillRect(geom.NewRect(10, 10, 100, 50), color.Blue)
+
+At this point the Canvas offset is zero, so the rectangle's recorded position
+should remain (10, 10). The command should have Type CmdFillRect and should
+contain the requested rectangle bounds and fill color.
+
+The test checks the command type and its x and y position. It does not assert
+every rectangle dimension or color because this test is focused on the basic
+Canvas-to-buffer integration and translation behavior.
+
+Translated Drawing Scope
+------------------------
+
+The test then enters a scoped translation:
+
+    canvas.Save()
+    canvas.Translate(20, 30)
+
+Save stores the original zero offset. Translate changes the current offset to
+(20, 30). Drawing calls made before Restore should resolve their coordinates
+using this offset.
+
+Rounded Rectangle Assertion
+---------------------------
+
+The test records a rounded rectangle with local bounds beginning at (0, 0):
+
+    canvas.FillRoundedRect(
+        geom.NewRect(0, 0, 80, 40),
+        geom.RadiusUniform(6),
+        color.Green,
+    )
+
+Because the active offset is (20, 30), the command should contain bounds whose
+origin is (20, 30). The test verifies CmdFillRoundedRect and those translated
+x and y values.
+
+This demonstrates that Canvas applies translations when the command is
+recorded. The command buffer does not need to retain Canvas's offset or perform
+this translation later.
+
+Text Assertion
+--------------
+
+The test records:
+
+    canvas.DrawText("Hello Nova", geom.Pt(5, 20), 14, 400, color.White)
+
+The local origin is (5, 20). Adding the active offset (20, 30) gives the
+recorded origin (25, 50). The test checks:
+
+- The command type is CmdText.
+- P1.X is 25.
+- P1.Y is 50.
+- Text is "Hello Nova".
+
+This confirms both positional translation and preservation of the text payload.
+The test does not inspect font size, weight, or color, since those are separate
+command fields and are not the main focus of this small test.
+
+Why the Command Count Is Three
+------------------------------
+
+After the three drawing calls, the test reads:
+
+    commands := buf.Commands()
+
+It expects exactly three commands. FillRect, FillRoundedRect, and DrawText each
+record one command. Save and Restore modify Canvas state only; they do not push
+entries into CommandBuffer.
+
+This count is an important distinction between state operations and drawing
+operations. A renderer should receive only commands that represent work or
+explicit renderer state changes such as clipping and transforms.
+
+Command Ordering
+----------------
+
+The test reads commands by index:
+
+    commands[0]
+    commands[1]
+    commands[2]
+
+The expected order is the order of the drawing calls:
+
+1. FillRect.
+2. FillRoundedRect.
+3. DrawText.
+
+CommandBuffer preserves insertion order, and renderers generally depend on that
+order because later drawing can cover earlier drawing. The test therefore checks
+both command content and position in the sequence.
+
+Restore Behavior
+----------------
+
+After recording the text, the test calls:
+
+    canvas.Restore()
+
+This returns Canvas to the offset saved before Translate. The current test does
+not record a fourth command after Restore, so it does not directly assert a
+post-restore coordinate. The call still documents and exercises the balanced
+scope used by normal Canvas code.
+
+A future extension could record another shape after Restore and assert that it
+uses the original coordinates. That would make the restoration behavior
+explicitly observable while keeping the same setup.
+
+Clearing the Buffer
+-------------------
+
+The test finishes with:
+
+    buf.Clear()
+
+Then it checks:
+
+    buf.Len() == 0
+
+Clear removes all commands from the logical sequence. It is implemented by
+reslicing the command slice to length zero, so the backing storage can normally
+be reused for another frame. This assertion verifies the public result without
+depending on slice capacity or allocation details.
+
+What This Test Does Not Cover
+-----------------------------
+
+This test intentionally does not cover every render feature. It does not test:
+
+- StrokeRect or StrokeRoundedRect.
+- FillCircle or StrokeCircle.
+- DrawLine.
+- DrawImage.
+- DrawShadow.
+- PushClip or PopClip.
+- PushTransform or PopTransform.
+- Renderer rasterization or pixel output.
+- Native X11 or other platform window behavior.
+- Concurrent access to Canvas or CommandBuffer.
+- Invalid geometry, nil buffers, or malformed commands.
+- Font measurement or glyph rendering.
+
+Those behaviors belong in focused tests close to their owning abstraction. A
+single test covering every command would be harder to diagnose and would blur
+the boundary between command construction and rendering execution.
+
+Failure Messages
+----------------
+
+The test uses t.Fatalf for each failed expectation. Fatal failures stop the test
+immediately because later assertions depend on the earlier command count and
+indexes being valid.
+
+The messages include the expected condition and, for command payload checks,
+the actual command with %+v. That makes failures useful when a command type,
+translated coordinate, or payload field changes unexpectedly.
+
+Recommended Extensions
+----------------------
+
+When expanding coverage, keep each behavior focused:
+
+- Add a translation test that verifies Restore with a command after Restore.
+- Add field assertions for colors, sizes, radii, stroke widths, and font data.
+- Add a test for nested Save and Restore calls.
+- Add a test that PushClip and PopClip are recorded in the right order.
+- Add a test for transform commands and their matrix payload.
+- Add a separate renderer test for actual pixels or backend operations.
+- Add validation tests if the public API begins rejecting invalid values.
+
+A table-driven test can be useful for commands with similar payload rules, but
+the existing integration test should remain readable as an end-to-end example.
+
+Test Maintenance Rules
+----------------------
+
+When changing Canvas or CommandBuffer, review this test for contract changes:
+
+1. Drawing calls should continue to produce one command each unless explicitly
+   documented otherwise.
+2. Save and Restore should remain state operations rather than buffer entries.
+3. Translated geometry should be resolved consistently at record time.
+4. Command order should remain stable.
+5. Clear should leave the logical command count at zero.
+6. Public behavior should be tested through exported APIs when possible.
+
+If the implementation intentionally changes one of these rules, update both the
+test assertions and its documentation so the new contract is clear.
+
+Summary
+-------
+
+TestCanvasAndCommandBuffer is a compact contract test for Nova's render command
+recording path. It proves that a Canvas can write ordered commands into a
+CommandBuffer, apply a scoped translation to rectangle and text geometry, and
+then clear the recorded sequence for reuse.
+
+The test focuses on command construction rather than drawing output. That keeps
+failures local and makes it clear whether a problem belongs to Canvas,
+CommandBuffer, or a renderer backend.

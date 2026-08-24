@@ -41,10 +41,11 @@ func Badge(text string) *BadgeComponent {
 	}
 }
 
-func (b *BadgeComponent) Success() *BadgeComponent { b.Variant = BadgeSuccess; return b }
-func (b *BadgeComponent) Warning() *BadgeComponent { b.Variant = BadgeWarning; return b }
-func (b *BadgeComponent) Error() *BadgeComponent   { b.Variant = BadgeError; return b }
-func (b *BadgeComponent) Info() *BadgeComponent    { b.Variant = BadgeInfo; return b }
+func (b *BadgeComponent) Success() *BadgeComponent   { b.Variant = BadgeSuccess; return b }
+func (b *BadgeComponent) Warning() *BadgeComponent   { b.Variant = BadgeWarning; return b }
+func (b *BadgeComponent) Error() *BadgeComponent     { b.Variant = BadgeError; return b }
+func (b *BadgeComponent) Info() *BadgeComponent      { b.Variant = BadgeInfo; return b }
+func (b *BadgeComponent) Secondary() *BadgeComponent { b.Variant = BadgeDefault; return b }
 
 func (b *BadgeComponent) Layout(node *ui.Node, constraints layout.BoxConstraints) geom.Size {
 	txtSz := text.MeasureText(b.Text, 11, font.WeightMedium)

@@ -1,0 +1,299 @@
+X11 Backend Explanation
+=======================
+
+Purpose
+-------
+
+x11.go is Nova's native Linux window backend for systems running an X11
+server. It connects the Go UI and rendering code to Xlib, the traditional C
+library used to communicate with X11 display servers.
+
+The file has two layers:
+
+1. A small C layer inside the cgo preamble that performs Xlib operations.
+2. A Go layer that exposes Nova-friendly window methods and callbacks.
+
+This separation keeps X11-specific C types and calls close to Xlib while the
+rest of Nova works with ordinary Go types such as image.RGBA, geom.Point, and
+input.Key.
+
+Build Constraint
+---------------
+
+The file is compiled only when both conditions are true:
+
+    linux && !headless
+
+The linux condition selects the Linux implementation. The !headless condition
+prevents this file from being used in headless builds, where opening a native
+window is not possible or not wanted.
+
+Required Native Library
+-----------------------
+
+The cgo preamble links the program with libX11:
+
+    #cgo LDFLAGS: -lX11
+
+The build machine therefore needs X11 development headers and the X11 library.
+On Debian or Ubuntu systems, these are commonly provided by the libx11-dev
+package. A running X11 display is also needed when the application is started.
+
+The DISPLAY environment variable normally tells Xlib which display server to
+open. If the variable is missing, invalid, or points to an unavailable server,
+XOpenDisplay fails and the backend cannot create a window.
+
+Native Window State
+-------------------
+
+The C X11Window structure stores all resources owned by one native window:
+
+- display: the connection to the X11 server.
+- screen: the selected default screen number.
+- window: the X11 window identifier.
+- gc: the graphics context used by XPutImage.
+- wmDeleteMessage: the atom used to identify a window-manager close request.
+- width and height: the current dimensions known by the native structure.
+- bgraBuffer: reusable process memory containing converted framebuffer pixels.
+- bgraCap: the capacity of bgraBuffer in bytes.
+
+The Go X11NativeWindow stores a pointer to that C structure plus Go-side
+callback functions. The pointer represents ownership of the native resources.
+After Close is called, the pointer is set to nil so the object cannot release
+the same resources twice.
+
+Creating a Window
+-----------------
+
+NewX11Window performs these steps:
+
+1. Copies the Go title into temporary C memory with C.CString.
+2. Opens the default X11 display with XOpenDisplay.
+3. Selects the display's default screen and root window.
+4. Creates a top-level window with the requested dimensions.
+5. Enables exposure, keyboard, pointer, and resize event masks.
+6. Disables automatic background clearing to reduce flicker.
+7. Sets the window title.
+8. Registers WM_DELETE_WINDOW so the close button becomes an event.
+9. Creates a graphics context for framebuffer submission.
+10. Maps the window, making it visible.
+11. Allocates the Go-visible native wrapper.
+
+The title string is temporary C memory. X11 stores the title during the Xlib
+call, so the temporary string can safely be freed when NewX11Window returns.
+
+If XOpenDisplay fails, the C helper returns NULL. The Go function currently
+returns a nil window and nil error for that condition, preserving the backend's
+existing behavior. Callers should check the returned window before using it.
+
+Rendering and Blitting
+----------------------
+
+Nova renders into an image.RGBA value. BlitRGBA transfers that image to the
+native X11 window through draw_x11_framebuffer.
+
+The rendering sequence is:
+
+1. Ignore the request if the native window pointer or image is nil.
+2. Read the image width and height from image.RGBA.Bounds.
+3. Calculate the required four bytes per pixel.
+4. Allocate or grow the reusable bgraBuffer when needed.
+5. Convert every RGBA pixel to the byte layout expected by this X11 path.
+6. Create a temporary XImage descriptor around bgraBuffer.
+7. Send the pixels to the server with XPutImage.
+8. Detach the buffer from the temporary XImage.
+9. Destroy the temporary XImage descriptor.
+10. Flush pending X11 requests with XFlush.
+
+The buffer is reused between frames. This avoids allocating and freeing a
+large pixel array every time an animation or application render loop draws.
+The buffer grows when a larger frame arrives and remains available for future
+frames.
+
+Pixel Format Conversion
+-----------------------
+
+Nova supplies pixels in RGBA order. The X11 image path used here expects BGRA
+ordering on the supported little-endian Linux targets. The conversion swaps
+the red and blue bytes while preserving green and alpha.
+
+For a little-endian machine, the four RGBA bytes in memory are interpreted as
+the packed word:
+
+    0xAABBGGRR
+
+The corresponding BGRA bytes are interpreted as:
+
+    0xAARRGGBB
+
+The implementation converts pixels as 32-bit words rather than writing each
+channel separately. This reduces the number of operations in the per-frame
+conversion loop.
+
+XImage Ownership Detail
+-----------------------
+
+XCreateImage creates an XImage structure that refers to bgraBuffer. The image
+structure is temporary, but bgraBuffer must survive until it is replaced or
+the window is closed.
+
+Normally XDestroyImage frees both the XImage structure and its data pointer.
+Before calling XDestroyImage, the backend sets img->data to NULL. That causes
+XDestroyImage to free only the temporary descriptor and prevents it from
+freeing the reusable buffer prematurely.
+
+Event Processing
+----------------
+
+PollEvents is non-blocking. It checks XPending and drains events already queued
+by the X11 server. If no event is waiting, the method returns immediately so
+the application can continue rendering or perform other work.
+
+For each event, XNextEvent removes it from the queue. The event union is then
+viewed as the matching Xlib event structure, such as XConfigureEvent,
+XButtonEvent, XMotionEvent, XKeyEvent, or XClientMessageEvent.
+
+Supported Events
+----------------
+
+Expose
+~~~~~~
+
+An Expose event means that part of the window needs repainting, for example
+after another window covered it. The backend invokes OnExpose when registered.
+The application can use that callback to request another framebuffer draw.
+
+ConfigureNotify
+~~~~~~~~~~~~~~~
+
+ConfigureNotify reports a server-confirmed geometry change. The backend reads
+the new width and height, updates the Go-side Width and Height fields, and
+invokes OnResize only if the dimensions differ from the stored values.
+
+ButtonPress and ButtonRelease
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+X11 uses numeric mouse button identifiers:
+
+- 1 is the left button.
+- 2 is the middle button.
+- 3 is the right button.
+
+The backend maps these values to Nova's input.MouseButton values and forwards
+window-local coordinates through OnPointerDown or OnPointerUp. Other button
+numbers currently use the default left-button value because Nova's public
+callback surface does not expose a separate value for them.
+
+MotionNotify
+~~~~~~~~~~~~
+
+MotionNotify contains the pointer's x and y coordinates relative to the X11
+window. These coordinates are converted to geom.Point and sent to
+OnPointerMove.
+
+KeyPress
+~~~~~~~~
+
+KeyPress handling uses XLookupString. This provides both:
+
+- A KeySym for special keys such as arrows, Escape, Delete, and Enter.
+- A short character buffer for printable or control characters.
+
+The backend first checks known X11 KeySym values. It then maps ASCII letters,
+digits, space, Backspace, and Enter to Nova key values. If a key does not match
+a known mapping, it remains input.KeyUnknown while the Rune field may still
+contain the first returned character.
+
+The current implementation handles KeyPress but does not expose a separate
+KeyRelease callback. KeyRelease events are selected at the X11 level but are
+not currently dispatched by PollEvents.
+
+ClientMessage and Window Closing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the user clicks the window manager's close button, X11 sends a
+ClientMessage. The backend reads the message atom and compares it with the
+registered WM_DELETE_WINDOW atom.
+
+For a matching close request, PollEvents:
+
+1. Calls OnClose if a callback is registered.
+2. Releases the native X11 resources through Close.
+3. Returns false so the application's event loop can stop.
+
+Close is also safe to call directly. It releases the graphics context, destroys
+the X11 window, closes the display connection, frees the framebuffer, and sets
+the Go pointer to nil. Calling it again has no effect.
+
+Callbacks
+---------
+
+SetCallbacks stores optional handlers for expose, resize, pointer press,
+pointer release, pointer movement, key press, and close events.
+
+Callbacks execute synchronously from the goroutine that calls PollEvents. A
+callback should therefore avoid blocking for a long time if the application
+needs a responsive render loop. Passing nil disables a callback without
+changing event polling.
+
+Threading Notes
+---------------
+
+Xlib has its own display-connection threading rules. This backend keeps window
+state in X11NativeWindow and does not launch a separate event thread. In normal
+use, creation, rendering, event polling, and closing should be coordinated by
+the application's main UI loop.
+
+The X11Platform type contains a mutex reserved for platform-level coordination,
+while the native pointer and callback fields belong to each X11NativeWindow.
+Code that uses one window from multiple goroutines should establish its own
+synchronization policy around callbacks and native operations.
+
+Resource Lifecycle Summary
+--------------------------
+
+    NewX11Window
+        -> XOpenDisplay
+        -> XCreateWindow
+        -> XCreateGC
+        -> XMapWindow
+
+    BlitRGBA (repeated)
+        -> allocate or reuse bgraBuffer
+        -> convert RGBA to BGRA
+        -> XCreateImage
+        -> XPutImage
+        -> XDestroyImage wrapper
+
+    Close
+        -> XFreeGC
+        -> XDestroyWindow
+        -> XCloseDisplay
+        -> free bgraBuffer
+        -> set Go pointer to nil
+
+Important Limitations
+---------------------
+
+- The backend requires Linux, cgo, Xlib headers, and libX11.
+- It targets X11 rather than Wayland directly.
+- Pixel conversion assumes the little-endian BGRA layout used by this path.
+- Only the currently mapped Nova mouse and keyboard values are dispatched.
+- KeyRelease events are selected but not exposed through a callback.
+- NewX11Window reports an unavailable display as nil window and nil error.
+- The framebuffer is submitted as a complete image rather than using dirty
+  rectangles or partial redraw regions.
+
+Reading Guide
+-------------
+
+When modifying x11.go, start with the ownership rules:
+
+1. Every successful Xlib allocation must be released by close_x11_window.
+2. bgraBuffer belongs to X11Window, not to the temporary XImage.
+3. img->data must remain NULL before XDestroyImage is called.
+4. PollEvents must return false after a confirmed WM_DELETE_WINDOW message.
+5. Go callbacks should receive Nova types rather than raw Xlib structures.
+
+These rules are the main safety boundaries between the C/X11 implementation
+and the rest of Nova.

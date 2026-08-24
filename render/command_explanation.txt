@@ -1,0 +1,428 @@
+Render Command Explanation
+==========================
+
+Purpose
+-------
+
+render/command.go defines the data contract between Nova's drawing API and its
+renderer backends. A Command is a description of one rendering operation. It
+contains enough information for a backend to interpret that operation later,
+without requiring the caller to draw immediately.
+
+The file does not render pixels. It defines:
+
+- CommandType, the operation tag.
+- ShadowParams, the data needed to describe a shadow.
+- Command, the shared payload structure used by all operations.
+
+Canvas normally creates Commands, CommandBuffer stores them in order, and a
+renderer consumes them to produce a framebuffer or platform-specific output.
+
+Tagged Command Design
+---------------------
+
+Command is a tagged union represented with ordinary Go fields. Type is the tag;
+the remaining fields are a shared payload area. The renderer inspects Type and
+reads only the fields relevant to that operation.
+
+For example:
+
+    Command{
+        Type:        CmdLine,
+        P1:          start,
+        P2:          end,
+        StrokeColor: lineColor,
+        StrokeWidth: 2,
+    }
+
+A line does not need Bounds, Text, Image, Shadow, or Transform. Those fields
+remain at their zero values.
+
+This design keeps command storage simple and avoids a separate Go struct type
+for every drawing operation. The tradeoff is that the compiler cannot enforce
+which fields are valid for each Type. The renderer and command-producing APIs
+must maintain that contract.
+
+CommandType
+-----------
+
+CommandType is an integer enum. The constants are ordered beginning with
+CmdNone, which receives the zero value through iota.
+
+CmdNone
+~~~~~~~
+
+CmdNone represents an empty, unspecified, or unsupported command. A renderer
+may ignore it, report it, or treat it as invalid according to its error policy.
+New commands should normally use a specific operation type.
+
+CmdFillRect
+~~~~~~~~~~~
+
+CmdFillRect describes an axis-aligned filled rectangle. It normally uses:
+
+- Bounds for position and dimensions.
+- Color for the fill color.
+
+CmdStrokeRect
+~~~~~~~~~~~~~
+
+CmdStrokeRect describes a rectangle outline. It normally uses:
+
+- Bounds for the rectangle geometry.
+- StrokeColor for the outline color.
+- StrokeWidth for its thickness.
+
+The renderer decides how the stroke is aligned with the rectangle boundary and
+how degenerate or negative dimensions are handled.
+
+CmdFillRoundedRect
+~~~~~~~~~~~~~~~~~~
+
+CmdFillRoundedRect describes a filled rectangle with rounded corners. It uses
+Bounds, Radius, and Color. Radius contains corner-radius information and may
+represent different horizontal and vertical values depending on the geometry
+type.
+
+CmdStrokeRoundedRect
+~~~~~~~~~~~~~~~~~~~~
+
+CmdStrokeRoundedRect describes the outline of a rounded rectangle. It uses
+Bounds, Radius, StrokeColor, and StrokeWidth.
+
+CmdFillCircle
+~~~~~~~~~~~~~
+
+CmdFillCircle describes a solid circle. P1 stores the center, Radius stores the
+circle radius, and Color stores the fill color.
+
+CmdStrokeCircle
+~~~~~~~~~~~~~~~
+
+CmdStrokeCircle describes a circle outline. It uses P1, Radius, StrokeColor,
+and StrokeWidth.
+
+CmdLine
+~~~~~~~
+
+CmdLine describes a straight segment from P1 to P2. StrokeColor and StrokeWidth
+define its visual style. The renderer determines cap style, antialiasing, and
+behavior when both endpoints are equal.
+
+CmdText
+~~~~~~~
+
+CmdText describes a text draw operation. It normally uses:
+
+- P1 as the text origin.
+- Text as the string content.
+- FontSize as the requested size.
+- FontWeight as the requested numeric weight.
+- Color as the text color.
+
+The command does not contain a selected font face, measured width, line layout,
+or glyph bitmap. Those decisions belong to the text and renderer subsystems.
+The current weight convention documents 400 as regular and 700 as bold.
+
+CmdImage
+~~~~~~~~
+
+CmdImage describes drawing an image into a destination rectangle. Bounds is the
+destination geometry and Image is the source image.Image value.
+
+Image is an interface reference, not a deep pixel copy. If the underlying image
+is mutable, changes made after command creation may be visible when the command
+is eventually consumed. Applications needing a snapshot must copy the image
+before creating the command.
+
+CmdShadow
+~~~~~~~~~
+
+CmdShadow describes a shadow associated with Bounds and, where applicable, a
+corner Radius. Shadow contains the visual parameters. The renderer determines
+how to create the shadow shape, blur it, composite it, and place it relative to
+the source geometry.
+
+CmdPushClip and CmdPopClip
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These commands describe a renderer clipping scope:
+
+- CmdPushClip uses Bounds to begin a rectangular clip.
+- CmdPopClip ends the most recently pushed clip.
+
+The commands must be processed in order. The clip is not merely metadata on a
+single shape; it affects subsequent commands until the matching pop operation.
+A renderer should define how unmatched push and pop operations are handled.
+
+CmdPushTransform and CmdPopTransform
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+These commands describe a transform scope:
+
+- CmdPushTransform uses Transform to begin a transform scope.
+- CmdPopTransform ends the most recently pushed transform scope.
+
+Transform is a geom.Matrix2D. The exact multiplication order, coordinate space,
+and nesting behavior must be consistent between command producers and the
+renderer. Transform commands are distinct from Canvas's current translation
+state: Canvas may resolve translations before recording, while these commands
+allow a renderer to process matrix state during command consumption.
+
+ShadowParams
+------------
+
+ShadowParams describes a drop or box shadow:
+
+    type ShadowParams struct {
+        Color   color.Color
+        OffsetX float64
+        OffsetY float64
+        Blur    float64
+        Spread  float64
+    }
+
+Color includes the shadow color and alpha. OffsetX and OffsetY displace the
+shadow from the source shape. Blur controls edge softness. Spread expands or
+contracts the shadow geometry before blur and compositing.
+
+The structure contains parameters, not a precomputed bitmap. Different
+backends may implement the same parameters with different rasterization
+strategies while preserving the intended appearance.
+
+Command Fields
+--------------
+
+Type
+~~~~
+
+Type is the operation discriminator. It must be set before a command is sent to
+a renderer. A zero Type means CmdNone.
+
+Bounds
+~~~~~~
+
+Bounds is rectangle geometry used by rectangle, image, shadow, and clip
+commands. It is not automatically interpreted for every command. For lines,
+circles, and text, the renderer reads points instead.
+
+Color
+~~~~~
+
+Color is used primarily by fill and text operations. It is separate from
+StrokeColor so a command can clearly distinguish interior and outline styling.
+
+StrokeColor
+~~~~~~~~~~~
+
+StrokeColor is the color for rectangle outlines, rounded rectangle outlines,
+circle outlines, and lines.
+
+StrokeWidth
+~~~~~~~~~~~
+
+StrokeWidth is the requested thickness for outlines and lines. Command does not
+clamp or validate it. A renderer should define behavior for zero, negative,
+NaN, or infinite values if such input can reach the backend.
+
+Radius
+~~~~~~
+
+Radius stores corner-radius data for rounded rectangles and uniform radius data
+for circles. The meaning is selected by Type. Circle commands generally use a
+uniform radius; rounded rectangles may carry per-corner information.
+
+P1 and P2
+~~~~~~~~~
+
+P1 and P2 are operation-specific points:
+
+- Circle commands use P1 as the center.
+- CmdLine uses P1 and P2 as endpoints.
+- CmdText uses P1 as the text origin.
+
+The fields are grouped in the Go declaration because they share the same
+geom.Point type, but their semantic roles depend on Type.
+
+Text
+~~~~
+
+Text contains the string for CmdText. Command does not wrap, shape, measure, or
+copy the string beyond normal Go string value semantics.
+
+FontSize and FontWeight
+~~~~~~~~~~~~~~~~~~~~~~~
+
+FontSize and FontWeight provide text style information for CmdText. FontWeight
+uses the conventional numeric scheme documented in the source: 400 is regular
+and 700 is bold. The renderer or font subsystem decides how these values map to
+available font faces.
+
+Image
+~~~~~
+
+Image holds the source image for CmdImage. It is an image.Image interface value.
+The command does not specify an image sampling mode, so scaling and filtering
+are backend responsibilities.
+
+Shadow
+~~~~~~
+
+Shadow carries ShadowParams for CmdShadow. It is ignored by unrelated command
+types.
+
+Transform
+~~~~~~~~~
+
+Transform carries a geom.Matrix2D for CmdPushTransform. It is normally ignored
+by commands that are not transform-scope operations. A renderer should define
+whether the matrix is applied before or after an existing transform and how
+nested transforms are combined.
+
+Command Ordering
+----------------
+
+Commands are normally consumed in the order stored by CommandBuffer. Ordering
+is part of the rendering semantics:
+
+    PushClip
+    FillRect
+    DrawText
+    PopClip
+
+The rectangle and text should be clipped, and the clip should then be removed.
+Likewise, later filled shapes may cover earlier shapes, and a later text command
+may appear above earlier geometry.
+
+Command.go itself does not sort, batch, merge, or optimize commands. Any
+renderer optimization must preserve visible ordering and the behavior of clip
+and transform scopes.
+
+Producer and Consumer Responsibilities
+--------------------------------------
+
+Command producers, such as Canvas, should:
+
+- Set the correct Type.
+- Populate every field required by that Type.
+- Apply local coordinate transformations when their API promises to do so.
+- Preserve references only when their lifetime is understood.
+- Avoid using unrelated fields as hidden side channels.
+
+Renderers should:
+
+- Dispatch based on Type.
+- Read only the payload fields defined for that Type.
+- Validate values at the backend boundary where necessary.
+- Maintain clip and transform stacks in command order.
+- Define behavior for CmdNone and malformed commands.
+- Handle images, fonts, geometry, and shadows according to backend capability.
+
+CommandBuffer should:
+
+- Preserve command order.
+- Store commands without changing their payload.
+- Expose a clear lifecycle for recording, consuming, and reuse.
+
+Relationship to Canvas
+----------------------
+
+Canvas provides a higher-level API over this command schema. For example,
+Canvas.FillRect translates the rectangle using its current offset and records a
+CmdFillRect with Bounds and Color populated.
+
+Canvas.DrawLine translates both endpoints and records CmdLine with P1, P2,
+StrokeColor, and StrokeWidth. Canvas.PushClip records CmdPushClip, leaving the
+renderer to maintain the actual clipping stack.
+
+This division means Canvas is responsible for making the command description
+convenient and consistent, while the renderer is responsible for interpreting
+the description.
+
+Validation and Error Handling
+-----------------------------
+
+Command is a value container and does not return errors. It does not verify:
+
+- Whether Bounds has positive dimensions.
+- Whether a radius fits inside its rectangle.
+- Whether a stroke width is valid.
+- Whether an image is nil.
+- Whether text is empty.
+- Whether a transform is invertible.
+- Whether clip and transform scopes are balanced.
+
+If invalid values are possible, validation should occur in a deliberate layer.
+It may happen in Canvas for immediate API feedback, in the renderer for
+backend-specific rules, or in a debug validation pass. The chosen location
+should be documented and consistent.
+
+Memory and Ownership
+--------------------
+
+Most Command fields are value types, so creating a command copies their values.
+Text strings and Image interface values follow Go's normal reference semantics:
+
+the string header refers to string data, and Image refers to an image object.
+The command does not create a deep copy of either payload.
+
+The ShadowParams value is copied into Command. Geometry values are also copied
+as values. A renderer can therefore safely read those fields after the original
+local variables used to construct the command have gone out of scope.
+
+The Image field is the main lifetime consideration. The image object must remain
+usable until the renderer finishes consuming the command.
+
+Extending the Command Schema
+----------------------------
+
+When adding a new command type:
+
+1. Add a new CommandType constant without renumbering existing constants.
+2. Document the constant beside the other enum values.
+3. Identify exactly which Command fields form its payload.
+4. Add a producer API or construction helper.
+5. Teach every relevant renderer how to consume it.
+6. Define ordering, clipping, transform, and ownership behavior.
+7. Add tests for payload construction and renderer interpretation.
+8. Update documentation such as this file.
+
+Existing numeric values should not be renumbered casually. If command values are
+stored, logged, serialized, or exchanged between components, changing their
+numbers can break compatibility.
+
+Testing Guidance
+----------------
+
+Useful tests for the command schema include:
+
+- Each producer creates the expected Type.
+- Geometry and style fields are populated correctly.
+- Unrelated fields remain at their zero values where that is required.
+- Commands preserve order in CommandBuffer.
+- Clip and transform scopes are consumed in sequence.
+- Image references remain usable through rendering.
+- Invalid values follow the documented validation policy.
+- New command types are handled by every supported renderer.
+
+A command construction test can inspect the recorded Command directly. A
+renderer test should verify the resulting drawing or backend operation instead
+of relying only on the command fields.
+
+Design Summary
+--------------
+
+Command is Nova's compact, shared description of rendering work. CommandType
+selects the operation, and the remaining fields provide its operation-specific
+payload. The type is intentionally simple so Canvas can record commands quickly
+and renderers can consume a predictable ordered stream.
+
+The most important rules are:
+
+- Type determines which fields are meaningful.
+- Commands are normally processed in order.
+- Clip and transform operations affect later commands through renderer state.
+- Command does not execute or validate drawing work by itself.
+- Images are referenced rather than deep-copied.
+- New command types require coordinated producer, renderer, and documentation
+  changes.

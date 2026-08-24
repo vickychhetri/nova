@@ -7,14 +7,27 @@ import (
 	"github.com/vickychhetri/nova/core/geom"
 )
 
-// Canvas provides an ergonomic 2D drawing API recording commands into a CommandBuffer.
+// Canvas provides an ergonomic 2D drawing API that records commands into a
+// CommandBuffer instead of drawing immediately.
+//
+// Canvas keeps a lightweight local coordinate state. Drawing methods apply the
+// current translation to their geometry before the resulting Command is added
+// to Buffer. The renderer later consumes those commands in recording order.
 type Canvas struct {
+	// Buffer receives every command recorded by this canvas. It must be
+	// non-nil before calling any drawing method.
 	Buffer *CommandBuffer
+	// offset is the translation applied to subsequently recorded geometry.
 	offset geom.Point
-	stack  []geom.Point
+	// stack stores offsets saved by Save, in last-in-first-out order.
+	stack []geom.Point
 }
 
-// NewCanvas creates a Canvas recording to the given CommandBuffer.
+// NewCanvas creates a Canvas that records to buf.
+//
+// The buffer is supplied by the caller so multiple drawing layers can share
+// one command stream when needed. The canvas starts with a zero translation
+// and reserves stack capacity for common nesting depths.
 func NewCanvas(buf *CommandBuffer) *Canvas {
 	return &Canvas{
 		Buffer: buf,
@@ -22,12 +35,18 @@ func NewCanvas(buf *CommandBuffer) *Canvas {
 	}
 }
 
-// Save pushes current coordinate transform state onto stack.
+// Save pushes the current translation onto the transform stack.
+//
+// Save does not add a render command. It only stores Canvas-side state so a
+// later Restore can return to the same local coordinate system.
 func (c *Canvas) Save() {
 	c.stack = append(c.stack, c.offset)
 }
 
-// Restore pops coordinate transform state from stack.
+// Restore restores the most recently saved translation.
+//
+// An unmatched Restore is intentionally a no-op. The method does not affect
+// commands already recorded and does not modify clipping state.
 func (c *Canvas) Restore() {
 	if len(c.stack) > 0 {
 		c.offset = c.stack[len(c.stack)-1]
@@ -36,17 +55,24 @@ func (c *Canvas) Restore() {
 }
 
 // Translate shifts all subsequent coordinate operations by (dx, dy).
+//
+// Translation is cumulative and affects only commands recorded after this
+// call. It moves positions and rectangles, but not size values such as circle
+// radii or stroke widths.
 func (c *Canvas) Translate(dx, dy float64) {
 	c.offset.X += dx
 	c.offset.Y += dy
 }
 
-// CurrentOffset returns current translation offset.
+// CurrentOffset returns the current translation offset as a value.
+//
+// Modifying the returned point does not modify the Canvas state.
 func (c *Canvas) CurrentOffset() geom.Point {
 	return c.offset
 }
 
-// FillRect draws a filled rectangle.
+// FillRect records a filled rectangle with translated bounds and the supplied
+// fill color.
 func (c *Canvas) FillRect(rect geom.Rect, col color.Color) {
 	c.Buffer.Push(Command{
 		Type:   CmdFillRect,
@@ -55,7 +81,8 @@ func (c *Canvas) FillRect(rect geom.Rect, col color.Color) {
 	})
 }
 
-// StrokeRect draws a stroked rectangle border.
+// StrokeRect records a rectangle outline. The renderer interprets StrokeWidth
+// and determines how the border is rasterized around the bounds.
 func (c *Canvas) StrokeRect(rect geom.Rect, col color.Color, strokeWidth float64) {
 	c.Buffer.Push(Command{
 		Type:        CmdStrokeRect,
@@ -65,7 +92,8 @@ func (c *Canvas) StrokeRect(rect geom.Rect, col color.Color, strokeWidth float64
 	})
 }
 
-// FillRoundedRect draws a filled rounded rectangle.
+// FillRoundedRect records a filled rectangle with rounded corners. The corner
+// radius is preserved as supplied; validation or clamping belongs downstream.
 func (c *Canvas) FillRoundedRect(rect geom.Rect, radius geom.CornerRadius, col color.Color) {
 	c.Buffer.Push(Command{
 		Type:   CmdFillRoundedRect,
@@ -75,7 +103,8 @@ func (c *Canvas) FillRoundedRect(rect geom.Rect, radius geom.CornerRadius, col c
 	})
 }
 
-// StrokeRoundedRect draws a stroked rounded rectangle border.
+// StrokeRoundedRect records the outline of a rounded rectangle, including its
+// translated bounds, corner radius, outline color, and stroke width.
 func (c *Canvas) StrokeRoundedRect(rect geom.Rect, radius geom.CornerRadius, col color.Color, strokeWidth float64) {
 	c.Buffer.Push(Command{
 		Type:        CmdStrokeRoundedRect,
@@ -86,7 +115,8 @@ func (c *Canvas) StrokeRoundedRect(rect geom.Rect, radius geom.CornerRadius, col
 	})
 }
 
-// FillCircle draws a filled circle.
+// FillCircle records a filled circle. The center is translated, while radius
+// remains unchanged because it describes a size rather than a position.
 func (c *Canvas) FillCircle(center geom.Point, radius float64, col color.Color) {
 	c.Buffer.Push(Command{
 		Type:   CmdFillCircle,
@@ -96,7 +126,8 @@ func (c *Canvas) FillCircle(center geom.Point, radius float64, col color.Color) 
 	})
 }
 
-// StrokeCircle draws a stroked circle outline.
+// StrokeCircle records a circle outline with translated center, radius, color,
+// and stroke width.
 func (c *Canvas) StrokeCircle(center geom.Point, radius float64, col color.Color, strokeWidth float64) {
 	c.Buffer.Push(Command{
 		Type:        CmdStrokeCircle,
@@ -107,7 +138,8 @@ func (c *Canvas) StrokeCircle(center geom.Point, radius float64, col color.Color
 	})
 }
 
-// DrawLine draws a straight line between two points.
+// DrawLine records a line between two translated points. Both endpoints receive
+// the same offset, preserving the line's shape while moving it as a unit.
 func (c *Canvas) DrawLine(p1, p2 geom.Point, col color.Color, strokeWidth float64) {
 	c.Buffer.Push(Command{
 		Type:        CmdLine,
@@ -118,7 +150,10 @@ func (c *Canvas) DrawLine(p1, p2 geom.Point, col color.Color, strokeWidth float6
 	})
 }
 
-// DrawText draws a string of text at origin point.
+// DrawText records text at a translated origin.
+//
+// Text measurement, font selection, baseline interpretation, and glyph
+// rasterization are responsibilities of the renderer and text subsystem.
 func (c *Canvas) DrawText(text string, origin geom.Point, fontSize float64, fontWeight int, col color.Color) {
 	c.Buffer.Push(Command{
 		Type:       CmdText,
@@ -130,7 +165,10 @@ func (c *Canvas) DrawText(text string, origin geom.Point, fontSize float64, font
 	})
 }
 
-// DrawImage draws an image within specified destination rect.
+// DrawImage records an image and its translated destination rectangle.
+//
+// The image is stored as an image.Image reference; Canvas does not copy or
+// decode its pixels. Scaling and filtering are decided by the renderer.
 func (c *Canvas) DrawImage(img image.Image, dest geom.Rect) {
 	c.Buffer.Push(Command{
 		Type:   CmdImage,
@@ -139,7 +177,10 @@ func (c *Canvas) DrawImage(img image.Image, dest geom.Rect) {
 	})
 }
 
-// DrawShadow draws a drop shadow for a rectangle with corner radius.
+// DrawShadow records shadow parameters for a rounded rectangle.
+//
+// Canvas records the description only. Blur, spread, compositing, and the
+// final shadow shape are calculated by the renderer.
 func (c *Canvas) DrawShadow(bounds geom.Rect, radius geom.CornerRadius, shadow ShadowParams) {
 	c.Buffer.Push(Command{
 		Type:   CmdShadow,
@@ -149,7 +190,10 @@ func (c *Canvas) DrawShadow(bounds geom.Rect, radius geom.CornerRadius, shadow S
 	})
 }
 
-// PushClip activates a rectangular clipping region.
+// PushClip records the beginning of a rectangular clipping scope.
+//
+// The clip is represented as a command so the renderer can apply it to later
+// commands in stream order. It is separate from Canvas's translation stack.
 func (c *Canvas) PushClip(rect geom.Rect) {
 	c.Buffer.Push(Command{
 		Type:   CmdPushClip,
@@ -157,7 +201,10 @@ func (c *Canvas) PushClip(rect geom.Rect) {
 	})
 }
 
-// PopClip restores previous clipping state.
+// PopClip records the end of the current clipping scope.
+//
+// The renderer is responsible for maintaining its clip stack. This method does
+// not alter Canvas's coordinate offset or Save/Restore stack.
 func (c *Canvas) PopClip() {
 	c.Buffer.Push(Command{
 		Type: CmdPopClip,

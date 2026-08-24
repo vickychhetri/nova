@@ -1,6 +1,8 @@
 package window
 
 import (
+	"sync"
+
 	"github.com/vickychhetri/nova/core/geom"
 	"github.com/vickychhetri/nova/event"
 	"github.com/vickychhetri/nova/input"
@@ -14,6 +16,7 @@ import (
 
 // Window represents an application window.
 type Window struct {
+	mu          sync.RWMutex
 	title       string
 	size        geom.Size
 	scale       float64
@@ -26,6 +29,7 @@ type Window struct {
 	hoveredNode *ui.Node
 	nativeWin   platform.NativeWindow
 	needsRedraw bool
+	onKeyDown   func(e *event.KeyEvent)
 }
 
 // WindowOption configures Window attributes.
@@ -71,16 +75,23 @@ func WithTheme(t *theme.Theme) WindowOption {
 
 // Invalidate requests a redraw on the next event loop tick.
 func (w *Window) Invalidate() {
+	w.mu.Lock()
 	w.needsRedraw = true
+	w.mu.Unlock()
 }
 
 // NeedsRedraw reports whether the window needs to be re-rendered.
 func (w *Window) NeedsRedraw() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	return w.needsRedraw
 }
 
 // Content sets the root component content for this window.
 func (w *Window) Content(comp ui.Component) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if w.activeTheme != nil {
 		theme.SetCurrent(w.activeTheme)
 	}
@@ -128,35 +139,42 @@ func findNodeByComponent(n *ui.Node, comp ui.Component) *ui.Node {
 
 // AttachNative attaches an OS native window handle and registers callbacks.
 func (w *Window) AttachNative(nw platform.NativeWindow) {
+	w.mu.Lock()
 	w.nativeWin = nw
+	w.mu.Unlock()
+
 	if nw != nil {
 		nw.SetCallbacks(
 			func() {
-				w.needsRedraw = true
+				w.Invalidate()
 			},
 			func(newW, newH int) {
+				w.mu.Lock()
 				w.size = geom.Sz(float64(newW), float64(newH))
 				w.needsRedraw = true
+				w.mu.Unlock()
 			},
 			func(p geom.Point, btn input.MouseButton) {
 				w.DispatchPointerDown(p, int(btn))
-				w.needsRedraw = true
+				w.Invalidate()
 			},
 			func(p geom.Point, btn input.MouseButton) {
 				w.DispatchPointerUp(p, int(btn))
-				w.needsRedraw = true
+				w.Invalidate()
 			},
 			func(p geom.Point) {
 				if w.DispatchPointerMove(p) {
-					w.needsRedraw = true
+					w.Invalidate()
 				}
 			},
 			func(e *event.KeyEvent) {
 				w.DispatchKeyDown(e)
-				w.needsRedraw = true
+				w.Invalidate()
 			},
 			func() {
+				w.mu.Lock()
 				w.nativeWin = nil
+				w.mu.Unlock()
 			},
 		)
 	}
@@ -164,11 +182,16 @@ func (w *Window) AttachNative(nw platform.NativeWindow) {
 
 // NativeWindow returns active OS window handle.
 func (w *Window) NativeWindow() platform.NativeWindow {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	return w.nativeWin
 }
 
 // RenderFrame renders a complete frame of the UI tree and blits to native window if present.
 func (w *Window) RenderFrame() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	w.needsRedraw = false
 	if w.rootNode == nil {
 		return
@@ -206,17 +229,25 @@ func (w *Window) RenderFrame() {
 
 // DispatchPointerDown routes a mouse press event into the UI tree and switches focus cleanly.
 func (w *Window) DispatchPointerDown(p geom.Point, btn int) {
+	var clickHandler func()
+	var downHandler func(*event.PointerEvent)
+	var localP geom.Point
+
+	w.mu.Lock()
 	if w.rootNode == nil {
+		w.mu.Unlock()
 		return
 	}
 
 	// 1. Check if an active overlay (dropdown menu, dialog, popup) intercepts the click
 	if w.rootNode.DispatchOverlayPointerDown(p) {
 		w.needsRedraw = true
+		w.mu.Unlock()
 		return
 	}
 
-	hit, localP := w.rootNode.HitTestLocal(p)
+	hit, lp := w.rootNode.HitTestLocal(p)
+	localP = lp
 	if w.focusedNode != hit {
 		if w.focusedNode != nil {
 			w.focusedNode.IsFocused = false
@@ -227,67 +258,120 @@ func (w *Window) DispatchPointerDown(p geom.Point, btn int) {
 		}
 	}
 	if hit != nil {
-		if hit.OnClick != nil {
-			hit.OnClick()
-		}
-		if hit.OnPointerDown != nil {
-			hit.OnPointerDown(&event.PointerEvent{Position: localP})
-		}
+		clickHandler = hit.OnClick
+		downHandler = hit.OnPointerDown
+	}
+	w.mu.Unlock()
+
+	// Invoke handlers outside mutex lock to avoid deadlocks
+	if clickHandler != nil {
+		clickHandler()
+	}
+	if downHandler != nil {
+		downHandler(&event.PointerEvent{Position: localP})
 	}
 }
 
 // DispatchPointerUp routes mouse release event into the UI tree.
 func (w *Window) DispatchPointerUp(p geom.Point, btn int) {
+	var upHandler func(*event.PointerEvent)
+	var localP geom.Point
+
+	w.mu.Lock()
 	if w.rootNode == nil {
+		w.mu.Unlock()
 		return
 	}
-	hit, localP := w.rootNode.HitTestLocal(p)
+	hit, lp := w.rootNode.HitTestLocal(p)
+	localP = lp
 	if hit != nil && hit.OnPointerUp != nil {
-		hit.OnPointerUp(&event.PointerEvent{Position: localP})
+		upHandler = hit.OnPointerUp
+	}
+	w.mu.Unlock()
+
+	if upHandler != nil {
+		upHandler(&event.PointerEvent{Position: localP})
 	}
 }
 
 // DispatchPointerMove routes pointer movement and handles hover states without redundant frames.
 func (w *Window) DispatchPointerMove(p geom.Point) bool {
+	var moveHandler func(*event.PointerEvent)
+	var enterHandler func()
+	var leaveHandler func()
+	var localP geom.Point
+
+	w.mu.Lock()
 	if w.rootNode == nil {
+		w.mu.Unlock()
 		return false
 	}
 
 	// Check if active overlay handled mouse movement (e.g. dropdown item hover)
 	if w.rootNode.DispatchOverlayPointerMove(p) {
+		w.mu.Unlock()
 		return true
 	}
 
 	changed := false
-	hit, localP := w.rootNode.HitTestLocal(p)
+	hit, lp := w.rootNode.HitTestLocal(p)
+	localP = lp
 	if hit != w.hoveredNode {
 		changed = true
 		if w.hoveredNode != nil {
 			w.hoveredNode.IsHovered = false
-			if w.hoveredNode.OnPointerLeave != nil {
-				w.hoveredNode.OnPointerLeave()
-			}
+			leaveHandler = w.hoveredNode.OnPointerLeave
 		}
 		w.hoveredNode = hit
 		if w.hoveredNode != nil {
 			w.hoveredNode.IsHovered = true
-			if w.hoveredNode.OnPointerEnter != nil {
-				w.hoveredNode.OnPointerEnter()
-			}
+			enterHandler = w.hoveredNode.OnPointerEnter
 		}
 	}
 
 	if hit != nil && hit.OnPointerMove != nil {
-		hit.OnPointerMove(&event.PointerEvent{Position: localP})
+		moveHandler = hit.OnPointerMove
 		changed = true
+	}
+	w.mu.Unlock()
+
+	if leaveHandler != nil {
+		leaveHandler()
+	}
+	if enterHandler != nil {
+		enterHandler()
+	}
+	if moveHandler != nil {
+		moveHandler(&event.PointerEvent{Position: localP})
 	}
 	return changed
 }
 
-// DispatchKeyDown routes keyboard events to focused node.
+// OnKeyDown registers a window-level keyboard event listener.
+func (w *Window) OnKeyDown(handler func(e *event.KeyEvent)) *Window {
+	w.mu.Lock()
+	w.onKeyDown = handler
+	w.mu.Unlock()
+	return w
+}
+
+// DispatchKeyDown routes keyboard events to window-level listener and focused node.
 func (w *Window) DispatchKeyDown(e *event.KeyEvent) {
-	if w.focusedNode != nil && w.focusedNode.OnKeyDown != nil {
-		w.focusedNode.OnKeyDown(e)
+	var winHandler func(e *event.KeyEvent)
+	var nodeHandler func(e *event.KeyEvent)
+
+	w.mu.RLock()
+	winHandler = w.onKeyDown
+	if w.focusedNode != nil {
+		nodeHandler = w.focusedNode.OnKeyDown
+	}
+	w.mu.RUnlock()
+
+	if winHandler != nil {
+		winHandler(e)
+	}
+	if nodeHandler != nil {
+		nodeHandler(e)
 	}
 }
 

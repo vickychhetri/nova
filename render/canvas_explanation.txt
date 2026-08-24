@@ -1,0 +1,415 @@
+Canvas Explanation
+==================
+
+Purpose
+-------
+
+render/canvas.go provides Canvas, Nova's ergonomic 2D drawing API. Canvas does
+not draw pixels directly. Each drawing method converts its arguments into a
+render.Command and records that command in a CommandBuffer.
+
+This design separates drawing intent from rendering execution:
+
+- Application and widget code use readable operations such as FillRect and
+  DrawText.
+- Canvas applies the current coordinate translation.
+- CommandBuffer preserves the resulting commands in order.
+- A renderer later interprets those commands and produces pixels.
+
+Canvas is therefore a recording facade, not a renderer or framebuffer. Calling
+a Canvas method normally changes the command list but does not immediately
+change the screen.
+
+Canvas State
+------------
+
+Canvas stores three pieces of state:
+
+    Buffer *CommandBuffer
+    offset geom.Point
+    stack  []geom.Point
+
+Buffer is the destination for every command recorded by the Canvas. It is
+provided by the caller when NewCanvas is called.
+
+offset is the current translation applied to future coordinates. It starts at
+the zero point. The offset is not a general matrix transform; it stores only an
+x and y translation.
+
+stack stores previous offsets for Save and Restore. It is initialized with a
+capacity of 16 entries, which allows a typical nesting depth without an
+immediate allocation. The stack grows automatically if more nested saves are
+needed.
+
+Creating a Canvas
+-----------------
+
+NewCanvas accepts a CommandBuffer pointer and returns a Canvas configured to
+record into it:
+
+    canvas := NewCanvas(buffer)
+
+The constructor does not create a CommandBuffer automatically. The caller owns
+the buffer and can share it with other Canvas values when that is intentional.
+All drawing methods assume Buffer is non-nil. Constructing a Canvas with a nil
+buffer and then calling a drawing method will panic when it attempts to call
+Buffer.Push.
+
+A Canvas has no separate disposal operation. Its state is ordinary Go memory,
+and the recorded commands remain in the supplied CommandBuffer until that
+buffer is cleared or discarded.
+
+Coordinate Translation
+----------------------
+
+Translate changes the current offset:
+
+    c.offset.X += dx
+    c.offset.Y += dy
+
+The translation is cumulative. If the current offset is (10, 20) and
+Translate(3, -5) is called, the new offset is (13, 15).
+
+Every coordinate-based drawing method applies the offset before recording its
+command. This lets a widget draw in local coordinates while its parent places
+the widget at a different position.
+
+For a point p, the recorded point is:
+
+    recordedPoint = p + offset
+
+For a rectangle, the recorded bounds are translated by the offset in both x
+and y directions.
+
+Translate affects only commands recorded after the call. Commands already in
+the buffer contain their resolved coordinates and are not changed when the
+offset changes later.
+
+Save and Restore
+----------------
+
+Save records the current offset on the stack:
+
+    c.stack = append(c.stack, c.offset)
+
+Restore removes the most recently saved offset and makes it current. If the
+stack is empty, Restore does nothing. It does not panic and it does not append a
+command to the CommandBuffer.
+
+Save and Restore are useful for scoped drawing transforms:
+
+    canvas.Save()
+    canvas.Translate(panelX, panelY)
+    canvas.FillRect(localRect, color)
+    canvas.Restore()
+
+The rectangle is recorded at the translated position, while later drawing
+returns to the offset that was active before Save.
+
+The stack is last-in, first-out. Nested saves restore in reverse order:
+
+    Save A
+      Translate
+      Save B
+        Translate
+        Restore -> returns to state after A's translation
+      Restore   -> returns to state before A's translation
+
+Save and Restore track only translation state. They do not save the command
+buffer length, clipping state, colors, stroke settings, or renderer state.
+
+CurrentOffset
+-------------
+
+CurrentOffset returns the current translation as a geom.Point. It is a value
+result, so changing the returned point does not change the Canvas offset.
+
+This method is useful when code needs to inspect placement state or calculate a
+related coordinate manually. Drawing methods should generally be preferred for
+recording commands because they apply the offset consistently.
+
+Recorded Command Shape
+----------------------
+
+Each Canvas method creates a render.Command with a Type field and only the
+fields needed by that operation. The renderer uses Type to decide how to
+interpret the remaining fields.
+
+Common command fields include:
+
+- Bounds: rectangle geometry for rectangle, image, shadow, and clip commands.
+- P1 and P2: points for circles, lines, and text origins.
+- Color: fill or text color.
+- StrokeColor: outline color.
+- StrokeWidth: outline thickness.
+- Radius: corner or circle radius information.
+- Text: text content.
+- FontSize and FontWeight: text styling values.
+- Image: image.Image data for image commands.
+- Shadow: drop-shadow parameters.
+
+Canvas leaves command execution and validation to the renderer. For example,
+Canvas records the supplied stroke width; it does not decide whether zero or
+negative widths are valid.
+
+Filled Rectangles
+-----------------
+
+FillRect records CmdFillRect. It translates the supplied geom.Rect and stores
+the supplied color in Command.Color.
+
+This operation describes a solid rectangular area. The rectangle's geometry is
+resolved at recording time, so later calls to Translate do not move it.
+
+Stroked Rectangles
+------------------
+
+StrokeRect records CmdStrokeRect. It translates the rectangle and stores the
+outline color in StrokeColor and the line thickness in StrokeWidth.
+
+Unlike FillRect, the interior is not described as filled by this command. The
+renderer decides how the border is rasterized, including how stroke width is
+centered on the rectangle boundary.
+
+Rounded Rectangles
+------------------
+
+FillRoundedRect records CmdFillRoundedRect with translated bounds, a
+geom.CornerRadius, and a fill Color.
+
+StrokeRoundedRect records CmdStrokeRoundedRect with translated bounds, the
+corner radius, StrokeColor, and StrokeWidth.
+
+Canvas does not clamp corner radii or normalize them. Any normalization or
+backend-specific interpretation belongs to the renderer or geometry layer.
+
+Circles
+-------
+
+FillCircle records CmdFillCircle. Its center is translated with Point.Add, and
+the scalar radius is converted with geom.RadiusUniform(radius). The resulting
+radius is stored in Command.Radius.
+
+StrokeCircle records CmdStrokeCircle with the same translated center and radius,
+plus StrokeColor and StrokeWidth.
+
+Only the center point is translated. The radius is a size, not a position, so
+it is unchanged by Translate.
+
+Lines
+-----
+
+DrawLine records CmdLine. Both endpoints are translated independently:
+
+    P1 = p1 + offset
+    P2 = p2 + offset
+
+The command stores the line color in StrokeColor and its thickness in
+StrokeWidth. Translating both endpoints by the same offset preserves the line's
+length and direction while moving it as a unit.
+
+Text
+----
+
+DrawText records CmdText. The supplied origin is translated and stored in P1.
+The text string, font size, font weight, and text color are copied into the
+command.
+
+The origin convention and baseline behavior are ultimately defined by the
+renderer. Canvas only records the origin point and text properties; it does not
+measure the string, choose a font, or wrap the text.
+
+FontWeight follows the command-level convention documented in command.go, where
+400 represents regular weight and 700 represents bold weight. Other values are
+passed through unchanged for the renderer to interpret.
+
+Images
+------
+
+DrawImage records CmdImage with translated destination bounds and the supplied
+image.Image value.
+
+The image itself is stored as an interface value. Canvas does not copy pixel
+data, decode the image, resize it, or retain a separate snapshot. If the image
+object is mutable, the renderer may observe its state at execution time rather
+than exactly at recording time.
+
+The destination rectangle is translated, but image scaling, filtering, aspect
+ratio handling, and clipping are renderer responsibilities.
+
+Shadows
+-------
+
+DrawShadow records CmdShadow with translated bounds, corner radius, and a
+ShadowParams value.
+
+ShadowParams contains:
+
+- Color: shadow color.
+- OffsetX and OffsetY: displacement from the source bounds.
+- Blur: blur amount.
+- Spread: expansion or contraction of the shadow shape.
+
+Canvas records these values without computing a blurred shape. The renderer
+must decide how to rasterize the shadow and how it interacts with clipping and
+other commands.
+
+Clipping
+--------
+
+PushClip records CmdPushClip with translated rectangular bounds. It announces
+that subsequent renderer operations should be restricted to that rectangle.
+
+PopClip records CmdPopClip and has no geometry fields. It asks the renderer to
+restore the previous clipping state.
+
+Clipping is represented as commands rather than immediate Canvas state. This
+means the renderer must process clip commands in order and maintain its own
+clip stack while consuming the CommandBuffer.
+
+Canvas's Save and Restore stack is separate from the renderer's clip stack.
+Save/Restore changes the coordinate offset only; it does not record a clip
+operation and does not automatically restore a clip pushed between them.
+
+Command Ordering
+----------------
+
+Canvas records commands in the exact order in which methods are called. This
+order matters because later operations may cover earlier operations, and clip
+commands affect the operations that follow them.
+
+For example:
+
+    PushClip
+    FillRect
+    DrawText
+    PopClip
+
+A renderer should normally process that sequence in order so both the rectangle
+and text are clipped, and the clipping state is then restored.
+
+Canvas does not sort, batch, merge, or remove redundant commands. Those are
+possible renderer optimizations, but they must preserve the visual ordering
+and clip semantics expected by the command stream.
+
+Relationship to CommandBuffer
+-----------------------------
+
+Canvas is a convenience layer over CommandBuffer:
+
+    Canvas drawing call
+            |
+            v
+    apply current offset
+            |
+            v
+    construct Command
+            |
+            v
+    Buffer.Push(command)
+
+CommandBuffer owns the ordered slice. Canvas owns temporary coordinate state.
+Clearing the CommandBuffer removes the recorded drawing work, but it does not
+reset the Canvas offset or its Save/Restore stack.
+
+If a Canvas is reused after its buffer is cleared, its current translation is
+still active. Callers should explicitly Restore or create a new Canvas when a
+fresh coordinate state is required.
+
+Example Frame Recording
+-----------------------
+
+    buffer := NewCommandBuffer()
+    canvas := NewCanvas(buffer)
+
+    canvas.FillRect(background, backgroundColor)
+
+    canvas.Save()
+    canvas.Translate(panel.X, panel.Y)
+    canvas.FillRoundedRect(localPanel, radius, panelColor)
+    canvas.DrawText("Hello", titleOrigin, 18, 700, textColor)
+    canvas.Restore()
+
+    canvas.PushClip(contentRect)
+    canvas.DrawImage(image, imageRect)
+    canvas.PopClip()
+
+    render(buffer.Commands())
+    buffer.Clear()
+
+The renderer receives commands containing already translated geometry. It does
+not need to know that the panel was drawn in local coordinates or that Canvas
+used Save and Restore while recording it.
+
+Nil and Zero-Value Behavior
+---------------------------
+
+A zero-value Canvas has a nil Buffer, a zero offset, and a nil stack. Save,
+Restore, Translate, and CurrentOffset can operate on the zero-value state, but
+any drawing method will panic because Buffer is nil.
+
+NewCanvas initializes the stack capacity but does not protect against a nil
+buffer. Callers should always provide a valid CommandBuffer.
+
+A nil *Canvas pointer also cannot be used. Calling any method that dereferences
+it will panic.
+
+Concurrency Notes
+-----------------
+
+Canvas has no mutex. It should normally be used by one goroutine while
+recording. Concurrent calls that mutate offset, stack, or the shared
+CommandBuffer can race.
+
+Even if the underlying CommandBuffer later gains synchronization, Canvas's
+offset and stack would still require their own synchronization if one Canvas
+were shared across goroutines. Separate Canvas values with separate coordinate
+state are usually easier to reason about.
+
+Performance Characteristics
+---------------------------
+
+Canvas methods perform small amounts of work:
+
+- Translate updates two floating-point values.
+- Save appends one point to a slice.
+- Restore removes one point from that slice.
+- Drawing methods construct a Command and append it to the buffer.
+
+The drawing methods do not allocate geometry objects explicitly. The main
+allocation behavior comes from CommandBuffer growth, strings or image values
+provided by the caller, and any renderer work performed later.
+
+The stack starts with capacity 16 and grows only when nesting exceeds that
+capacity. Reusing a Canvas and its CommandBuffer can reduce allocation pressure
+in repeated frame recording, provided the caller correctly resets both command
+contents and coordinate scope.
+
+Maintenance Guidelines
+----------------------
+
+When modifying canvas.go, preserve these rules unless the API is deliberately
+changed:
+
+1. Apply the current offset to every positional argument before recording.
+2. Do not translate sizes such as radii or stroke widths.
+3. Preserve command order.
+4. Keep Canvas recording-only; do not perform backend drawing here.
+5. Keep Save and Restore balanced in callers when scoped translation is used.
+6. Keep Canvas's transform stack separate from renderer clipping commands.
+7. Document any new command fields or state that affect renderer behavior.
+8. Decide explicitly whether a new operation records a value snapshot or keeps
+   a reference to caller-owned data.
+
+Summary
+-------
+
+Canvas is Nova's readable front end for constructing render commands. It adds
+local-coordinate support through Translate, Save, and Restore, then records
+translated rectangles, points, text, images, shadows, and clip operations into
+a CommandBuffer.
+
+Its key semantic guarantee is simple: drawing calls record commands in order,
+with the current translation already applied. The renderer remains responsible
+for interpreting those commands, validating parameters, handling clipping, and
+turning the command stream into pixels.

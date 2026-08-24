@@ -1,0 +1,311 @@
+CommandBuffer Explanation
+==========================
+
+Purpose
+-------
+
+render/buffer.go defines CommandBuffer, Nova's lightweight command recording
+container for rendering work. Instead of drawing immediately, code can record a
+sequence of render.Command values and let a later stage inspect or execute
+those commands.
+
+This is useful when a frame, layer, component, or scene needs to describe its
+visual output before the renderer processes it. The buffer preserves command
+order, so commands are normally consumed in the same order in which they were
+added.
+
+The implementation is intentionally small. It does not interpret, sort,
+execute, serialize, or merge commands. Its responsibility is to own an ordered
+collection and provide the basic operations needed to build and reuse it.
+
+File Structure
+--------------
+
+The file contains:
+
+- The render package declaration.
+- The sync import.
+- The CommandBuffer type.
+- A constructor for creating an empty buffer.
+- Push for recording one command.
+- Commands for reading the recorded commands.
+- Len for checking the number of commands.
+- Clear for reusing the buffer.
+
+CommandBuffer Data Model
+------------------------
+
+CommandBuffer contains two fields:
+
+    mu       sync.Mutex
+    commands []Command
+
+The commands slice stores the actual ordered drawing commands. A slice is a Go
+header containing a pointer to an underlying array, a length, and a capacity.
+The length is the number of active commands. The capacity is the number of
+commands that can fit before Go must allocate a larger backing array.
+
+The mu field is a mutex reserved for synchronization. The current methods do
+not lock or unlock it, so CommandBuffer is not currently safe for concurrent
+reads and writes. The mutex should either be used consistently if concurrent
+access becomes part of the design, or removed if command buffers are intended
+to remain single-owner values.
+
+A command buffer should normally be built and consumed by one rendering flow or
+protected by an external synchronization policy. Concurrent calls to Push,
+Commands, Len, or Clear can race and must be avoided with the current code.
+
+Creating a Buffer
+-----------------
+
+NewCommandBuffer creates and returns an empty CommandBuffer:
+
+    commands: make([]Command, 0, 128)
+
+The initial length is zero, meaning no commands have been recorded. The initial
+capacity is 128, which gives the first group of Push calls room to append
+without immediately allocating another backing array.
+
+The capacity is an allocation hint, not a maximum. If more than 128 commands
+are appended, Go automatically grows the slice according to its normal slice
+growth rules. If a typical frame contains substantially fewer or more commands,
+the initial capacity can be adjusted based on profiling data.
+
+Recording Commands with Push
+----------------------------
+
+Push appends one Command to the end of the buffer:
+
+    cb.commands = append(cb.commands, cmd)
+
+Appending preserves insertion order. If commands A, B, and C are pushed in
+that order, Commands returns them as A, B, and C.
+
+The command value is copied into the slice. This is normal Go value semantics.
+If Command contains pointers, slices, maps, or other reference-like fields,
+those referenced objects are not deeply copied. The behavior of such nested
+data remains governed by the Command type itself.
+
+Push does not validate the command, reject duplicates, execute rendering, or
+notify another subsystem. Validation and execution belong to the code that
+understands the meaning of each Command.
+
+Reading Commands
+----------------
+
+Commands returns the buffer's recorded command slice:
+
+    return cb.commands
+
+The returned value is a slice backed by the same underlying array as the
+CommandBuffer. It is not a defensive copy. This has two important consequences:
+
+1. Reading the returned slice is efficient because it avoids copying every
+   command.
+2. The caller can mutate the buffer's command storage through the returned
+   slice, including changing existing elements or reslicing within capacity.
+
+Callers should therefore treat the returned slice as a view owned by the
+CommandBuffer unless the API is intentionally being used for direct mutation.
+A future implementation could return a copy when isolation is required, but
+that would add allocation and copy cost.
+
+The returned slice also becomes logically stale after Clear or after an append
+causes the buffer to grow. A caller retaining it should not assume it tracks
+future buffer changes.
+
+Checking Length with Len
+------------------------
+
+Len returns len(cb.commands), the number of active commands currently recorded.
+It is the authoritative count used by the buffer itself.
+
+Len is useful for:
+
+- Checking whether there is rendering work before processing.
+- Preallocating output or temporary storage.
+- Iterating by index.
+- Reporting frame or layer command counts for diagnostics.
+- Measuring rendering workload during profiling.
+
+Len reports the current slice length, not capacity. Reserved but unused backing
+storage is not counted as a command.
+
+Reusing a Buffer with Clear
+---------------------------
+
+Clear resets the active command range with:
+
+    cb.commands = cb.commands[:0]
+
+This changes the length to zero while retaining the existing backing array and
+its capacity. The next Push can reuse that storage instead of forcing a fresh
+allocation.
+
+Clear is intended for frame-to-frame or layer-to-layer reuse. A common pattern
+is:
+
+    buffer.Clear()
+    buffer.Push(backgroundCommand)
+    buffer.Push(contentCommand)
+    process(buffer.Commands())
+
+Clear does not shrink capacity and does not release the backing array to the
+runtime. This is beneficial when successive frames have similar command counts.
+It may retain memory longer than needed if a very large temporary frame causes
+the slice to grow and later frames are much smaller.
+
+Clear also does not explicitly zero the elements that were previously active.
+The old values remain in the backing array beyond the new length until future
+appends overwrite them or the backing array is released. Those values are not
+part of the buffer's logical contents because the slice length is zero.
+
+Typical Rendering Flow
+----------------------
+
+A normal command-buffer lifecycle looks like this:
+
+    NewCommandBuffer
+            |
+            v
+        Push commands
+            |
+            v
+      Inspect with Len or Commands
+            |
+            v
+       Execute or submit commands
+            |
+            v
+           Clear
+            |
+            +----> reuse for the next frame
+
+The buffer is a recording step, not the complete rendering pipeline. Another
+component must decide how each Command affects a canvas, framebuffer, renderer,
+or platform window.
+
+Ordering Semantics
+------------------
+
+CommandBuffer does not reorder commands. The slice sequence is the only order
+maintained by this type.
+
+For a painter-style renderer, ordering can affect the final image. For example,
+a later fill may cover an earlier shape, and a later text command may appear on
+top of earlier geometry. Code that consumes the buffer should normally iterate
+from index 0 through Len()-1 unless the renderer explicitly defines a different
+policy.
+
+The buffer also does not group commands by layer, clip region, material, or
+z-index. If batching or sorting is added later, it should be implemented by a
+renderer or a separate optimization stage with clearly documented ordering
+rules.
+
+Memory and Performance
+----------------------
+
+The design favors low overhead in a render loop:
+
+- The slice is allocated with useful initial capacity.
+- Push uses Go's built-in append operation.
+- Commands returns a view without copying.
+- Clear reuses the existing backing array.
+
+This makes the common sequence of record, consume, and clear inexpensive. The
+tradeoff is that callers must understand slice aliasing and retained capacity.
+
+For performance investigations, monitor both Len and capacity. A high command
+count may indicate complex content, while a large capacity with a small Len may
+indicate that a previous frame caused significant growth. Capacity is not
+currently exposed by CommandBuffer, so inspecting it would require changing the
+API or using profiling/debugging code.
+
+Nil and Zero-Value Behavior
+---------------------------
+
+The zero value of CommandBuffer has a nil commands slice. It can still be used
+with Push because append works with a nil slice. Len returns zero, and Clear
+reslices the nil slice to length zero successfully.
+
+NewCommandBuffer is still the preferred constructor because it supplies the
+initial capacity of 128 commands.
+
+A nil *CommandBuffer pointer is different from a zero-value CommandBuffer.
+Calling methods through a nil pointer will panic because the methods dereference
+cb. Callers should ensure the pointer itself is non-nil.
+
+Concurrency and Mutex Notes
+---------------------------
+
+Although CommandBuffer includes sync.Mutex, no current method uses cb.mu. The
+presence of a mutex does not automatically make field access synchronized.
+
+If concurrent access is required, every operation that reads or changes the
+slice must follow one consistent locking policy. That includes Commands,
+because returning the slice while another goroutine modifies it would still
+allow a race after the method returns. A simple future policy could be:
+
+- Lock around Push, Len, and Clear.
+- Lock while copying commands for a snapshot.
+- Avoid returning the internal slice directly, or document that callers must
+  hold an agreed lock while using it.
+
+Another valid design is ownership transfer: one goroutine records commands,
+then hands the completed buffer to a renderer, and no goroutine accesses it
+during the handoff. That approach can avoid lock overhead but requires clear
+lifecycle discipline.
+
+Error Handling
+--------------
+
+CommandBuffer does not return errors. Its operations are in-memory slice
+operations and do not perform I/O or invoke the renderer. Allocation failures
+are handled by the Go runtime rather than returned from Push or NewCommandBuffer.
+
+Errors related to invalid drawing parameters, unsupported command kinds, or
+native rendering failures belong to the layer that interprets or submits the
+commands.
+
+Maintenance Guidelines
+----------------------
+
+When changing buffer.go, preserve these expectations unless the public API is
+intentionally being redesigned:
+
+1. Push appends and preserves command order.
+2. Commands exposes the current active command sequence.
+3. Len reports the active sequence length.
+4. Clear removes commands from the logical sequence.
+5. Clear retains capacity for efficient reuse.
+6. No operation should unexpectedly execute a drawing command.
+7. Any concurrency guarantee must be implemented consistently across all
+   methods, not inferred from the presence of sync.Mutex.
+
+Questions to Consider Before Extending
+---------------------------------------
+
+Before adding features, decide whether the buffer is intended to be:
+
+- A single-threaded temporary frame recorder.
+- A synchronized collection shared by producer and renderer goroutines.
+- An immutable snapshot passed between pipeline stages.
+- A reusable pool-backed object for high-frequency rendering.
+
+Those choices affect whether Commands should return the internal slice, a copy,
+or an iterator; whether mu should be used; and whether Clear should retain or
+release memory.
+
+Summary
+-------
+
+CommandBuffer is an ordered, reusable slice of render commands. New commands
+are appended with Push, the active commands can be viewed with Commands, the
+active count is available through Len, and Clear resets the logical contents
+without normally reallocating storage.
+
+Its main strengths are simplicity, predictable ordering, and low allocation
+pressure in repeated render loops. Its main API caveat is that Commands returns
+the internal slice, and its main implementation caveat is that the declared
+mutex is currently unused. Both details should remain visible to anyone using
+or extending this type.
