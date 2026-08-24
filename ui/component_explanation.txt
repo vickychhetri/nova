@@ -1,0 +1,388 @@
+Nova UI Component Explanation
+==============================
+
+Purpose
+-------
+
+ui/component.go defines the contracts used to describe and render Nova UI
+components. It separates declarative component descriptions from mounted runtime
+nodes and from the renderer that eventually produces pixels.
+
+The package provides:
+
+- BuildContext, the data passed into component building.
+- Component, the core declarative interface.
+- RenderableComponent, the layout and paint extension for direct renderers.
+- BaseComponent, default implementations for simple components.
+
+The central relationship is:
+
+    Component description
+            |
+            v
+       Node.Build/Reconcile
+            |
+            v
+       mounted UI tree
+            |
+            v
+       layout and paint
+
+A Component describes what should exist. A Node stores the retained runtime
+instance. A RenderableComponent knows how to measure and record the visual
+output for its node.
+
+BuildContext
+------------
+
+BuildContext contains the contextual information available while a component is
+being built or updated:
+
+    type BuildContext struct {
+        Theme *theme.Theme
+        Scale float64
+        Node  *Node
+    }
+
+Theme
+~~~~~
+
+Theme points to the active design-system configuration. Components can read its
+palette, typography, spacing, and radii tokens while building child components
+or deciding their visual configuration.
+
+The pointer is supplied by the caller and is not copied by BuildContext. A
+component should generally read the theme during Build rather than retain the
+context pointer for later asynchronous work.
+
+Scale
+~~~~~
+
+Scale is the logical-to-device scale factor supplied by the application or
+renderer. Components can use it when their layout or drawing behavior needs to
+account for device pixel density.
+
+The meaning of scale is a contract between the application, layout, and
+renderer. BuildContext stores the value but does not apply it automatically.
+
+Node
+~~~~
+
+Node points to the mounted runtime node currently associated with the component
+being built. It allows build logic to access runtime identity or state when the
+UI architecture requires that information.
+
+Node is a runtime pointer, not a new component description. Components should
+avoid retaining it beyond the lifecycle scope unless the UI framework explicitly
+supports that usage.
+
+BuildContext Lifetime
+~~~~~~~~~~~~~~~~~~~~~
+
+BuildContext is passed into Component.Build by the reconciliation process. The
+context describes one build operation. Its fields may differ during later
+reconciliation, so components should not assume that a previously observed
+Theme, Scale, or Node remains current forever.
+
+Component Interface
+-------------------
+
+Component is the core declarative interface:
+
+    type Component interface {
+        Build(ctx BuildContext) Component
+        Key() string
+    }
+
+Build
+~~~~~
+
+Build receives the current BuildContext and returns a Component describing the
+child subtree. Returning another component lets a wrapper compose children.
+Returning nil indicates that the component has no returned child or manages its
+children through a specialized mechanism.
+
+The current Node reconciliation implementation uses Build to create or update a
+single child component. Existing child nodes can be retained while their
+Component value is replaced, allowing runtime identity and state to survive.
+
+Build should describe structure and configuration. It should not assume that it
+is directly painting pixels unless the component also implements
+RenderableComponent and participates in the separate layout and paint phases.
+
+Key
+~~~
+
+Key returns a component identity string. Reconciliation can use keys to decide
+whether a logical component is the same entity across updates and whether its
+Node and associated state should be retained.
+
+A stable key should describe identity, not a transient value that changes every
+build. Changing a key may cause the framework to treat the component as a new
+instance, depending on the reconciler's policy.
+
+The current Component interface requires Key even for simple components. A
+component that has no meaningful custom identity can return an empty string or
+embed BaseComponent with a configured CompKey, according to local conventions.
+
+Build Results and Nil
+~~~~~~~~~~~~~~~~~~~~~
+
+A nil Build result has a defined architectural meaning: the component is a leaf
+from the generic reconciler's perspective, or it manages children directly.
+
+This is different from a nil Component pointer supplied to a Node. A nil
+component means the node has no component to process at all; a non-nil component
+returning nil can still have direct container-specific behavior.
+
+RenderableComponent
+-------------------
+
+RenderableComponent extends Component with layout and paint operations:
+
+    type RenderableComponent interface {
+        Component
+        Layout(node *Node, constraints layout.BoxConstraints) geom.Size
+        Paint(node *Node, canvas *render.Canvas)
+    }
+
+It is intended for primitive or directly renderable components that know how to
+measure themselves and record their visual commands.
+
+Layout
+~~~~~~
+
+Layout receives the mounted Node and BoxConstraints, then returns the component
+size. The component can use constraints to choose a valid width and height.
+
+Node stores the returned dimensions in its Bounds while preserving the node's
+existing origin. The layout method should return logical dimensions consistent
+with the surrounding layout system.
+
+RenderableComponent does not automatically imply a particular child policy. In
+the current Node implementation, a renderable component receives direct Paint
+and Layout delegation rather than automatic generic child traversal.
+
+Paint
+~~~~~
+
+Paint receives the mounted Node and a render.Canvas. It records drawing commands
+rather than writing directly to a platform window.
+
+The Node wraps the call in a Save, Translate, and Restore scope. Components can
+therefore paint in their local coordinate space using bounds-relative geometry.
+The Canvas and render package define how those commands are stored and later
+executed.
+
+The component should not assume that Paint is called only once. Frames can be
+redrawn after state changes, exposure events, resizing, or invalidation.
+
+Renderable and Generic Tree Traversal
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A Node checks whether its Component implements RenderableComponent. If so, it
+calls the component's Layout and Paint methods. Otherwise, it delegates layout
+to a child when one exists and recursively paints child nodes.
+
+This gives primitive components direct renderer control while allowing wrapper
+components to compose a tree without implementing drawing themselves.
+
+BaseComponent
+-------------
+
+BaseComponent provides default Component implementations:
+
+- Key returns CompKey.
+- Build returns nil.
+
+It is useful as an embedded field for components that need a stable key but do
+not need a custom Build implementation, or for components whose children are
+managed outside the generic single-child reconciliation path.
+
+Embedding Example
+~~~~~~~~~~~~~~~~~
+
+A component can embed BaseComponent and set its key during construction:
+
+    type Label struct {
+        ui.BaseComponent
+        Text string
+    }
+
+The exact package naming in an actual component depends on whether the type is
+inside or outside the ui package. Embedding promotes Key and Build unless the
+component overrides either method.
+
+CompKey
+~~~~~~~
+
+CompKey stores the string returned by BaseComponent.Key. It is a value field, so
+copying BaseComponent copies the key string value according to normal Go string
+semantics.
+
+An empty key is allowed by the type. Whether empty keys are treated as stable,
+unique, or unkeyed is determined by the reconciliation implementation.
+
+Base Build
+~~~~~~~~~~
+
+BaseComponent.Build returns nil. This keeps the default component behavior
+small and signals no generic child component is returned.
+
+A component with actual declarative children should implement Build and return
+the appropriate child component, or use the established container API when it
+manages multiple children directly.
+
+Component Lifecycle
+-------------------
+
+A component commonly participates in these stages:
+
+    create component
+          |
+          v
+    NewNode(component)
+          |
+          v
+    Mount / Reconcile
+          |
+          v
+    Layout(constraints)
+          |
+          v
+    Paint(canvas)
+          |
+          v
+    event and state updates
+          |
+          +----> Reconcile again
+          |
+          v
+    Unmount
+
+Build can run many times over the lifetime of one mounted Node. Layout and Paint
+can also run repeatedly. Key and reconciliation rules determine whether the same
+Node survives between those passes.
+
+Declarative Versus Runtime State
+--------------------------------
+
+Components should describe structure and configuration. Runtime state belongs
+in Node, state primitives, or other explicit state holders.
+
+For example, a component's Text field may be declarative input, while hover,
+focus, dirty state, subscriptions, and parent relationships belong to the
+mounted Node. Keeping those categories separate allows the framework to rebuild
+component descriptions without losing interaction state.
+
+Theme and Scale Usage
+---------------------
+
+BuildContext lets components adapt to active design tokens and device scale.
+Typical uses include:
+
+- Reading palette colors for child configuration.
+- Selecting spacing or radius tokens.
+- Choosing text sizes from Typography.
+- Adapting custom geometry to scale.
+- Passing context into nested component Build calls.
+
+Context values should be treated as inputs for the current lifecycle pass. A
+component that needs to react to theme changes must be rebuilt or otherwise
+invalidated according to the surrounding UI system.
+
+Identity and Reconciliation
+---------------------------
+
+Key exists to support identity decisions. A reconciler can use a stable key to
+match a new component with an existing Node and preserve subscriptions or local
+state.
+
+The current Node implementation is intentionally simple and updates a single
+existing child directly. More advanced multi-child reconciliation would need to
+use keys, positions, or another matching policy. Any such policy should document
+what happens when keys are duplicated, removed, or changed.
+
+Ownership and Mutation
+----------------------
+
+BuildContext contains pointers to Theme and Node. Component implementations
+should understand that these are shared runtime values and should avoid
+unexpected mutation.
+
+Renderable methods receive Node and Canvas pointers. They may inspect or update
+runtime state only where the component contract allows it. Drawing through the
+Canvas records commands into its CommandBuffer, so command-buffer ownership and
+lifecycle remain part of the render pipeline.
+
+Concurrency
+-----------
+
+Component, BuildContext, and RenderableComponent do not provide internal
+synchronization. Build, Layout, Paint, and Node mutation should normally be
+coordinated by the UI runtime or one owner goroutine.
+
+Sharing a mutable Node, Theme, or Canvas across goroutines requires external
+synchronization. A BuildContext pointer should not be assumed safe for use after
+its build operation has completed.
+
+Zero Values
+-----------
+
+BuildContext's zero value contains a nil Theme, zero Scale, and nil Node. A
+component that accepts a context should decide whether those values are valid or
+whether it requires a fully initialized runtime context.
+
+BaseComponent's zero value has an empty CompKey and Build returns nil. It is
+valid as a default implementation, though an application may need a meaningful
+key for stateful reconciliation.
+
+Testing Guidance
+----------------
+
+Useful component tests include:
+
+- Build receives the expected Theme, Scale, and Node.
+- Key returns stable configured identity.
+- BaseComponent.Key returns CompKey.
+- BaseComponent.Build returns nil.
+- Renderable Layout respects supplied constraints.
+- Renderable Paint records expected commands.
+- Components rebuild when context or state changes.
+- Stable keys preserve intended Node identity.
+- Changed keys follow documented replacement behavior.
+- Nil Build results follow the leaf/container policy.
+- Components do not retain stale context assumptions across builds.
+
+Integration tests should verify how Component contracts interact with Node
+reconciliation, layout, Canvas recording, and renderer execution.
+
+Adding a Component Type
+-----------------------
+
+When adding a component:
+
+1. Decide whether it is a wrapper, a renderable primitive, or a container.
+2. Implement Build and Key.
+3. Add RenderableComponent methods when it owns layout and paint.
+4. Define stable identity and key behavior.
+5. Use BuildContext theme and scale consistently.
+6. Keep runtime state in explicit state or Node-managed fields.
+7. Decide who owns children and how they are reconciled.
+8. Add focused tests for build, layout, paint, and identity.
+9. Document coordinate and ownership assumptions.
+10. Ensure repeated builds do not accidentally discard required state.
+
+Summary
+-------
+
+component.go defines the contracts that let Nova describe, retain, lay out, and
+paint UI components. BuildContext supplies theme, scale, and mounted-node
+context. Component supplies Build and Key. RenderableComponent adds direct
+layout and drawing. BaseComponent provides a nil-child default and a key field.
+
+The most important boundary is the separation between description and runtime:
+components describe what should exist, Nodes retain live instances, and
+renderable components convert those instances into layout sizes and render
+commands. Stable keys, scoped context, and explicit ownership keep that lifecycle
+predictable.

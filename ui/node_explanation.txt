@@ -1,0 +1,495 @@
+Nova UI Node Explanation
+========================
+
+Purpose
+-------
+
+ui/node.go defines Node, the runtime instance used by Nova's retained UI tree.
+A Component describes UI behavior and structure; a Node stores the mounted
+instance, parent/child relationships, layout bounds, interaction callbacks,
+and cleanup state that persist across frames.
+
+Node is the bridge between several UI phases:
+
+    Component.Build
+          |
+          v
+       Reconcile
+          |
+          v
+        Layout
+          |
+          v
+         Paint
+          |
+          v
+      event hit testing
+          |
+          v
+        Unmount
+
+The node package does not define every component's layout or paint algorithm.
+Renderable components provide those operations, while Node coordinates their
+placement, traversal, and lifecycle.
+
+Retained Tree Model
+-------------------
+
+A retained tree keeps Node instances between updates. This allows state,
+callbacks, focus, hover status, and other runtime information to survive when a
+component rebuilds its description.
+
+The important distinction is:
+
+- Component: declarative or behavioral description produced by application code.
+- Node: persistent mounted instance used by the runtime.
+
+When reconciliation updates a child, it replaces the child Component value but
+keeps the existing child Node whenever possible. That preserves node identity
+and its associated state.
+
+Node Fields
+-----------
+
+Component
+~~~~~~~~~
+
+Component stores the component currently represented by the node. If it is nil,
+lifecycle methods treat the node as empty and generally stop processing.
+
+Parent and Children
+~~~~~~~~~~~~~~~~~~~
+
+Parent points to the containing node. Children stores child nodes in paint and
+traversal order. The current reconciliation path supports a component producing
+at most one returned component child, while some container components manage
+children directly.
+
+Parent links are also used by GlobalToLocal. A child attached through a
+container-specific path receives its parent link during hit testing as an
+additional safeguard.
+
+Bounds
+~~~~~~
+
+Bounds stores the node's rectangle in its parent's coordinate space. X and Y are
+the local origin relative to the parent; Width and Height describe the measured
+extent.
+
+Paint translates the canvas by Bounds.X and Bounds.Y before invoking the node's
+component or children. Hit testing subtracts the same origin to move a point
+into child-local coordinates.
+
+IsDirty
+~~~~~~~
+
+IsDirty indicates that the node or dependent state needs an update. The current
+node file initializes new nodes as dirty, while the broader UI lifecycle decides
+when dirty state is set and cleared.
+
+IsHovered and IsFocused
+~~~~~~~~~~~~~~~~~~~~~~~
+
+These booleans store interaction state for the node. Pointer and focus dispatch
+code can use them to drive visual states or callbacks. They are node state, not
+properties of the immutable Component description.
+
+Event Handlers
+~~~~~~~~~~~~~~
+
+Node exposes callbacks for click, pointer down/up/move, pointer enter/leave,
+scroll, and key down/up. A nil callback means that handler is not registered.
+
+The node file stores the callbacks; the event dispatcher decides when to call
+them, how to propagate events, and when to stop after an event is handled.
+
+Overlay Handlers
+~~~~~~~~~~~~~~~~
+
+PaintOverlay and the overlay pointer callbacks support floating content such as
+popups, menus, and dropdowns. Overlay content is handled separately from the
+ordinary child tree so it can be painted above base content and checked for
+pointer interaction.
+
+Cleanup Functions
+~~~~~~~~~~~~~~~~~
+
+unsubscribes stores functions registered by state or effect integrations. They
+run during Unmount, then the slice is cleared so the node no longer retains the
+cleanup closures.
+
+NewNode
+-------
+
+NewNode creates an unmounted node for a Component. It initializes:
+
+- Component to the supplied value.
+- IsDirty to true.
+- Children to an empty slice with capacity four.
+
+The initial dirty state allows the first lifecycle pass to process the new node.
+The child capacity is an allocation hint for common small subtrees, not a limit.
+
+NewNode does not mount, build, lay out, or paint the component. Those steps are
+performed by Mount and later lifecycle phases.
+
+Mount
+-----
+
+Mount starts the node lifecycle by calling Reconcile. It does not separately
+perform layout or painting. A caller normally mounts the tree, runs layout with
+constraints, and then paints into a Canvas.
+
+Reconcile
+---------
+
+Reconcile builds or updates the component subtree:
+
+1. Return immediately when Component is nil.
+2. Set ctx.Node to the current node.
+3. Call Component.Build(ctx).
+4. Return when Build produces nil.
+5. Create and mount a child when no child exists.
+6. Otherwise replace the existing child's Component and reconcile it.
+
+The current model is a single returned child. A nil Build result can mean a leaf
+node or a component that manages children directly, such as a flex container.
+The node file does not remove extra children in that path; container-specific
+logic owns direct child management.
+
+Single-Child Identity
+---------------------
+
+When a node already has a child, reconciliation updates:
+
+    n.Children[0].Component = built
+
+It then calls Reconcile on that same child node. This is important because
+replacing the node would discard its callbacks, state subscriptions, focus,
+hover status, and other retained data.
+
+A future multi-child reconciler would need stable keys or another identity rule
+to decide which existing nodes correspond to new component children.
+
+BuildContext
+------------
+
+Reconcile assigns the current Node to BuildContext before calling Build. This
+allows component construction to access the mounted runtime node when the
+component API supports that behavior.
+
+The context is passed to child mounting and reconciliation as well. The exact
+context fields and ownership rules belong to the rest of the ui package.
+
+Layout
+------
+
+Layout accepts BoxConstraints and returns the node's resulting Size. It also
+updates Bounds with the resulting dimensions.
+
+The decision path is:
+
+1. Nil component: set zero bounds and return zero size.
+2. Renderable component: call its Layout method.
+3. Node with children: lay out the first child and adopt its size.
+4. No child or renderable behavior: constrain zero size and use that result.
+
+Renderable Components
+~~~~~~~~~~~~~~~~~~~~~
+
+If Component implements RenderableComponent, Node delegates measurement to
+renderable.Layout(n, constraints). The returned size becomes the node's width
+and height while the existing Bounds origin is preserved.
+
+The component receives the node so it can inspect or update runtime layout state
+according to the renderable contract.
+
+Wrapper Nodes
+~~~~~~~~~~~~~
+
+A non-renderable node with a child delegates layout to its first child. The child
+is then assigned local bounds beginning at (0, 0), and the parent receives the
+child's measured width and height.
+
+This supports wrapper components that provide structure or behavior without
+implementing their own drawing.
+
+Empty Nodes
+~~~~~~~~~~~
+
+A node with no renderable component and no child has no intrinsic content. Node
+asks constraints to constrain Size(0, 0), then uses that result for its bounds.
+
+Constraint semantics, including minimum, maximum, and infinite dimensions, are
+implemented by layout.BoxConstraints.
+
+Paint
+-----
+
+Paint records the node's visual output into a render.Canvas. It does not write
+pixels directly.
+
+The method performs:
+
+1. Return if Component is nil.
+2. Save the current Canvas translation.
+3. Translate by the node's Bounds origin.
+4. Ask a RenderableComponent to paint itself, or paint children in order.
+5. Restore the previous Canvas translation.
+
+Scoped Translation
+~~~~~~~~~~~~~~~~~~
+
+A component paints in local coordinates. Node translates the canvas before the
+call, so a child does not need to know its absolute position.
+
+The Save/Translate/Restore scope ensures that a node's position affects its own
+content and descendants but does not leak into siblings or ancestors.
+
+Renderable Paint Ownership
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a node's Component implements RenderableComponent, Node calls its Paint
+method and does not automatically traverse Children in the same branch. The
+renderable component owns the decision about its own children and drawing.
+
+Non-renderable Wrapper Paint
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a node is not renderable, Node recursively paints each child in slice order.
+This preserves the component tree's drawing order and works with Canvas's
+translation stack.
+
+Hit Testing
+-----------
+
+HitTestLocal finds the deepest interactive node under a point and returns the
+point converted into that node's local coordinate space.
+
+The algorithm is:
+
+1. Reject the node if p is outside n.Bounds.
+2. Subtract the node origin to produce localPoint.
+3. Visit children from last to first.
+4. Return the first child hit and its local point.
+5. If the current node is interactive, return it and localPoint.
+6. Otherwise return no hit.
+
+Reverse Child Order
+~~~~~~~~~~~~~~~~~~~
+
+Children are checked in reverse order because later-painted children are treated
+as visually topmost. This makes hit testing agree with painter-style rendering
+when overlapping children exist.
+
+The algorithm assumes Children order represents paint order. If a renderer uses a
+separate z-index system, hit testing and painting must share a consistent order
+policy.
+
+Boundary Behavior
+~~~~~~~~~~~~~~~~~
+
+HitTestLocal relies on Rect.ContainsPoint, which includes rectangle boundaries.
+A point exactly on an edge can therefore be considered inside. Adjacent nodes
+may both contain a boundary point; reverse child order determines which one wins.
+
+Local Coordinates
+~~~~~~~~~~~~~~~~~
+
+After the node contains the point, localPoint is calculated as:
+
+    localPoint = p - n.Bounds.Origin()
+
+That point is passed to children, which subtract their own bounds origins. The
+returned point is relative to the deepest node that accepted the hit.
+
+HitTest
+-------
+
+HitTest calls HitTestLocal and returns only the deepest interactive Node. It is a
+convenience method for callers that need the target but do not need local pointer
+coordinates.
+
+GlobalToLocal
+-------------
+
+GlobalToLocal converts a point into the node's local coordinate space by walking
+from the node upward through Parent links and subtracting each Bounds origin.
+
+For a node with ancestors A and B, the effective conversion is equivalent to:
+
+    local = global - nodeOrigin - parentOrigin - ... - rootOrigin
+
+The method depends on Parent links being correct. HitTestLocal reinforces child
+parent links while traversing, but code that manually constructs a tree should
+also establish Parent relationships explicitly.
+
+IsInteractive
+-------------
+
+IsInteractive returns true when any direct click, pointer, scroll, or keyboard
+handler is present. It is used by hit testing to decide whether the current node
+can be a target after its children have been checked.
+
+Pointer enter and leave handlers are not included in the predicate. They are
+usually state transitions managed by pointer tracking rather than evidence that
+a node should independently consume a pointer hit.
+
+A node with only PaintOverlay or overlay pointer handlers is also not considered
+interactive by the base-tree predicate; overlay dispatch uses separate methods.
+
+Overlays
+--------
+
+Overlays are floating visual or interactive layers associated with nodes.
+
+PaintOverlays recursively calls PaintOverlay for the current node and then each
+child. The caller should invoke this after painting the ordinary tree so overlay
+content appears above base content.
+
+DispatchOverlayPointerDown and DispatchOverlayPointerMove check the current
+node's overlay handler, then recurse through children. They return true as soon
+as a handler reports that it consumed the point or movement.
+
+Overlay traversal currently follows child order. If multiple overlays overlap,
+the first consuming callback in that traversal wins. Applications that need
+strict topmost overlay behavior should keep overlay registration order aligned
+with visual order or add an explicit reverse/z-order policy.
+
+Overlay Coordinate Space
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The overlay dispatch methods receive a Point and pass it directly to callbacks.
+They do not perform Bounds subtraction or Canvas translation. Overlay callbacks
+must therefore agree with the coordinate space supplied by their caller.
+
+Unmount
+-------
+
+Unmount releases node-owned runtime resources:
+
+1. Call every function in unsubscribes.
+2. Clear unsubscribes.
+3. Recursively unmount every child.
+4. Set Children to nil.
+
+Cleanup happens before child unmount in the current implementation. Cleanup
+functions should be safe to call during teardown and should not assume that
+children remain mounted after the parent lifecycle completes.
+
+Unmount does not clear Component, Parent, Bounds, event callbacks, or overlay
+callbacks. The node is no longer retaining children and subscriptions, but other
+fields may remain available to code that still holds the pointer.
+
+Cleanup Safety
+~~~~~~~~~~~~~~
+
+The current implementation assumes each unsubscribe function is valid and does
+not recover from a panic. State/effect integrations should register cleanup
+functions that are safe to execute once and should avoid registering nil
+functions unless the caller guarantees they will not be invoked.
+
+Lifecycle Summary
+-----------------
+
+A typical node lifecycle is:
+
+    NewNode
+       |
+       v
+    Mount / Reconcile
+       |
+       v
+    Layout(constraints)
+       |
+       v
+    Paint(canvas)
+       |
+       v
+    HitTest / event dispatch
+       |
+       v
+    Unmount
+
+Reconciliation may repeat many times before unmount. Layout and paint repeat as
+needed for frames, while node identity and registered cleanup state persist.
+
+Concurrency
+-----------
+
+Node fields are directly mutable and the type has no internal mutex. Tree
+mutation, layout, painting, hit testing, and event dispatch should normally be
+coordinated by the UI runtime or one owner goroutine.
+
+Sharing a Node across goroutines while changing Children, Bounds, callbacks, or
+cleanup state can race. Synchronization should cover the complete lifecycle,
+not only one field.
+
+Common Invariants
+-----------------
+
+Healthy trees generally maintain these invariants:
+
+- A child's Parent points to its containing Node.
+- A node appears in at most one parent's Children slice.
+- Bounds are valid in the coordinate space of Parent.
+- Save/Translate/Restore scopes remain balanced during Paint.
+- Clip and overlay dispatch policies agree with visual ordering.
+- Cleanup functions are executed during Unmount and not retained afterward.
+- Reconciliation preserves child identity when the logical child is unchanged.
+
+Violating these invariants can cause incorrect local coordinates, stale state,
+missed hits, duplicate painting, or cleanup leaks.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- NewNode initializes Component, IsDirty, and empty Children correctly.
+- Mount builds a missing child.
+- Reconcile reuses an existing child node.
+- Nil components produce no subtree work.
+- Layout delegates to renderable components.
+- Wrapper layout positions the first child at local origin.
+- Paint applies and restores node translations.
+- HitTest chooses the deepest interactive child.
+- Reverse child order selects the visually topmost overlapping child.
+- HitTestLocal returns coordinates local to the selected node.
+- GlobalToLocal subtracts every ancestor origin.
+- IsInteractive detects supported handlers.
+- Overlay painting and dispatch recurse as intended.
+- Overlay dispatch stops after the first consuming handler.
+- Unmount executes cleanup functions and recursively clears children.
+
+Tests should include nested nodes, overlapping bounds, boundary points, nil
+components, and unbalanced or empty cleanup lists.
+
+Maintenance Checklist
+---------------------
+
+When changing node.go:
+
+1. Preserve Parent and Children relationships during tree updates.
+2. Keep component identity and node identity distinct.
+3. Apply Bounds translations consistently in Paint and hit testing.
+4. Keep Save/Restore balanced around every node paint scope.
+5. Keep hit-test order aligned with paint order.
+6. Define coordinate space for new event or overlay callbacks.
+7. Do not let overlay state accidentally change base-tree hit testing.
+8. Execute cleanup functions during unmount and release references afterward.
+9. Coordinate mutable tree access across goroutines.
+10. Add lifecycle tests for new reconciliation or traversal behavior.
+
+Summary
+-------
+
+Node is Nova's retained UI runtime unit. It keeps component identity, tree
+relationships, layout bounds, interaction handlers, overlays, and cleanup state
+while coordinating build, layout, paint, hit testing, and unmount phases.
+
+The central coordinate rule is consistent across the file: Bounds are stored in
+parent space, Paint translates into local space, and hit testing subtracts the
+same origins. The central lifecycle rule is equally important: reconciliation
+updates existing nodes when possible, while Unmount releases subscriptions and
+children in a defined order.

@@ -1,0 +1,518 @@
+Nova UI Builders Explanation
+============================
+
+Purpose
+-------
+
+ui/builders.go contains Nova's ergonomic component builders and fluent
+configuration APIs. It turns common UI descriptions into Component values that
+can be mounted into the retained Node tree.
+
+The file provides:
+
+- Geometry helper re-exports.
+- Flex containers through Column and Row.
+- Stack containers for layered content.
+- Expanded and Spacer flex helpers.
+- Center and Padding wrappers.
+- Styled Container boxes.
+- Reactive or static Text labels.
+- Interactive Button components and variants.
+
+The builders describe component configuration. Node owns mounting, layout
+traversal, painting scopes, hit testing, and cleanup. Layout engines calculate
+sizes and render.Canvas records drawing commands for later rasterization.
+
+Builder Style
+-------------
+
+Most builders return pointers to component structs. Configuration methods mutate
+the receiver and return the same pointer, allowing fluent construction:
+
+    button := ui.Button("Save").WithIcon("+").Primary()
+
+This style is convenient for local declarations, but the component should not be
+shared across independent trees when one tree may mutate it during configuration.
+
+Geometry Re-exports
+-------------------
+
+The package re-exports common constructors from core/geom:
+
+- All.
+- Symmetric.
+- TRBL.
+- Pt.
+- Sz.
+- RadiusUniform.
+- RadiusSeparate.
+
+These variables refer to the underlying functions, so callers can write
+ui.Pt(...) or ui.Symmetric(...) without importing core/geom for common builder
+configuration. Returned values remain geom.Point, geom.Size, geom.Insets, or
+geom.CornerRadius values.
+
+FlexComponent
+-------------
+
+FlexComponent implements a flexbox-style container. It stores:
+
+- Direction.
+- MainAxis alignment.
+- CrossAxis alignment.
+- Gap.
+- Children.
+
+The container delegates measurement and positioning to layout.ComputeFlex.
+FlexComponent itself synchronizes declarative Children with the mounted Node's
+child nodes before creating FlexChildInput values.
+
+AxisDirection
+~~~~~~~~~~~~~
+
+AxisDirection selects the primary layout direction:
+
+- DirHorizontal lays children from left to right.
+- DirVertical lays children from top to bottom.
+
+Column and Row
+~~~~~~~~~~~~~~
+
+Column creates a vertical FlexComponent with MainStart and CrossStart defaults.
+Row creates a horizontal FlexComponent with MainStart and CrossCenter defaults.
+Both accept any number of Component children.
+
+The defaults are intentionally different for cross-axis behavior: columns start
+children at the cross-axis edge, while rows center them vertically by default.
+Call AlignMain or AlignCross to override those policies.
+
+GapSpacing
+~~~~~~~~~~
+
+GapSpacing sets the gap between adjacent flex children and returns the same
+FlexComponent pointer. The value is passed to layout.ComputeFlex and is not
+converted or clamped by the builder.
+
+AlignMain and AlignCross
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+AlignMain sets the main-axis distribution strategy using layout.MainAxisAlignment.
+AlignCross sets the cross-axis strategy using layout.CrossAxisAlignment.
+The layout package defines the available alignment values and their exact
+behavior.
+
+Flex Layout Synchronization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+FlexComponent.Layout compares the declarative child count with node.Children.
+When counts differ, it creates a new child-node slice and establishes Parent
+links. When counts match, it updates each existing child node's Component value.
+
+Reusing nodes preserves retained runtime identity when possible. The current
+implementation matches children by position; it does not perform key-based
+reordering inside this helper.
+
+Each child becomes a FlexChildInput whose Measure callback calls the child Node's
+Layout. ExpandedComponent receives its configured flex factor. SpacerComponent
+receives flex factor 1. Ordinary children receive zero flex factor.
+
+After ComputeFlex returns, each child receives its calculated Bounds. The
+container returns the layout result's overall Size.
+
+Flex Painting
+~~~~~~~~~~~~~
+
+FlexComponent.Paint iterates through node.Children and paints each child. Node's
+outer Paint method establishes the FlexComponent's translated coordinate scope.
+Children therefore receive their own bounds translations as traversal continues.
+
+StackComponent
+--------------
+
+StackComponent implements layered layout for children that may overlap. It
+stores an Alignment and a list of Children.
+
+Stack creates a StackComponent with AlignTopLeft by default. Layout synchronizes
+child nodes, measures each child through layout.ComputeStack, and assigns the
+returned child bounds. Paint visits children in order.
+
+Because later painting can cover earlier painting, child order is meaningful for
+both visual stacking and hit testing. The Node hit-test path checks children in
+reverse order so the visually topmost child is preferred.
+
+ExpandedComponent
+-----------------
+
+ExpandedComponent wraps one child and supplies a flex factor to its parent.
+Expanded creates it with FlexFactor 1.0. The value can be changed directly when
+an alternate distribution factor is needed.
+
+During Layout, Expanded mounts or updates its child, delegates layout with the
+constraints supplied by the parent flex algorithm, and places the child at local
+origin (0, 0). During Paint it delegates to that child.
+
+Expanded is meaningful inside a FlexComponent. Outside a flex parent, its child
+still lays out, but no surrounding flex algorithm is available to distribute
+remaining main-axis space.
+
+SpacerComponent
+---------------
+
+SpacerComponent is an empty expandable flex child. Spacer creates one with no
+visual output. Its Layout accepts the constrained zero size; the containing flex
+layout recognizes it and assigns flex factor 1.0.
+
+Spacer does not paint pixels. Its purpose is to reserve flexible empty space
+between or around other flex children.
+
+CenterComponent
+---------------
+
+CenterComponent wraps one child and centers it in available space. Center creates
+this wrapper.
+
+Layout performs these steps:
+
+1. Mount or update the child node.
+2. Measure the child with loose constraints based on the parent's maximum size.
+3. Use the child size by default.
+4. Expand to bounded maximum width or height when constraints are bounded.
+5. Constrain the resulting container size.
+6. Set the child offset to half of the remaining horizontal and vertical space.
+
+The child is positioned at:
+
+    offsetX = (containerWidth - childWidth) / 2
+    offsetY = (containerHeight - childHeight) / 2
+
+Center.Paint delegates to the child. Node's normal translation scope handles the
+Center node's placement relative to its parent.
+
+PaddingComponent
+----------------
+
+PaddingComponent wraps one child with geom.Insets. Padding creates it from an
+inset value and child component.
+
+Layout deflates incoming constraints by the padding, measures the child inside
+those inner constraints, positions the child at (Insets.Left, Insets.Top), then
+adds horizontal and vertical inset totals back to produce the outer size.
+
+The final size is passed through the original constraints. Negative insets and
+oversized insets follow the behavior of layout.BoxConstraints and geom.Insets.
+
+Padding.Paint delegates to the child. The padding is represented by geometry,
+not by a separate drawing command.
+
+ContainerComponent
+-------------------
+
+ContainerComponent is a styled single-child box. It supports:
+
+- Optional explicit Width and Height.
+- Padding.
+- Margin.
+- Background.
+- BorderColor and BorderWidth.
+- Corner Radius.
+- Optional Shadow.
+- One Child.
+
+Container creates an initially unstyled component. Fluent methods configure the
+same pointer and return it for chaining.
+
+WithChild
+~~~~~~~~~
+
+WithChild sets the optional child. The current layout implementation manages one
+child node and updates its Component when the child changes.
+
+Size, WithWidth, and WithHeight
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Size sets both explicit dimensions by storing pointers to the supplied values.
+WithWidth and WithHeight set one dimension. A nil dimension means the layout
+engine may determine that dimension from constraints and child content.
+
+The pointers allow the component to distinguish an explicitly supplied zero from
+an unspecified dimension. Callers should avoid mutating a referenced local value
+unexpectedly after configuration unless that behavior is intentional.
+
+Pad and Marg
+~~~~~~~~~~~~
+
+Pad sets inner padding. Marg sets outer margin. Both accept geom.Insets and return
+the configured component.
+
+The layout engine uses padding to constrain and position child content. Margin
+contributes to outer placement and size according to layout.ComputeBoxLayout.
+
+Bg
+~~
+
+Bg sets the background color. Paint skips the background when its alpha is zero.
+If any corner radius is positive, Paint records a rounded fill; otherwise it
+records a normal rectangle fill.
+
+Border
+~~~~~~
+
+Border sets BorderColor and BorderWidth. Paint skips the border when width is not
+positive or color alpha is zero. Rounded borders use StrokeRoundedRect when any
+corner radius is positive; otherwise StrokeRect is used.
+
+Rounded
+~~~~~~~
+
+Rounded stores a geom.CornerRadius. It can represent uniform or per-corner
+rounding. The renderer decides how oversized or unusual radii are rasterized.
+
+DropShadow
+~~~~~~~~~~
+
+DropShadow stores a copy of render.ShadowParams behind a pointer field. A nil
+Shadow means no shadow is requested. Paint records the shadow before background,
+so background and border content appears above it.
+
+Container Layout
+~~~~~~~~~~~~~~~~
+
+Container.Layout synchronizes the optional child, creates a layout.BoxDecoration,
+and calls layout.ComputeBoxLayout. The result includes the container size and
+child bounds. Child bounds are assigned to the mounted child node.
+
+The builder does not perform pixel drawing or manually resolve margin and padding
+geometry. Those rules belong to the layout package.
+
+Container Paint Order
+~~~~~~~~~~~~~~~~~~~~~
+
+Container.Paint records content in this order:
+
+1. Shadow.
+2. Background.
+3. Border.
+4. Child.
+
+This order creates the expected visual layering. Transparent or invalid style
+values skip their associated commands.
+
+TextComponent
+-------------
+
+TextComponent renders either static content or a reactive string signal. It
+stores:
+
+- Content.
+- Signal.
+- Color.
+- hasCustomColor.
+- FontSize.
+- FontWeight.
+
+Text accepts several input forms:
+
+- string: stored directly in Content.
+- state.Signal[string]: stored as Signal and read later.
+- *state.Value[int]: converted to a decimal string initially.
+- fmt.Stringer: converted using String.
+- Any other value: converted using fmt.Sprintf("%v", value).
+
+Reactive Text
+~~~~~~~~~~~~~
+
+When Signal is non-nil, Layout and Paint read Signal.Get instead of using the
+static Content field. This lets text dimensions and drawing follow reactive state
+updates.
+
+Because signal values can change between layout and paint, applications should
+ensure invalidation and frame scheduling are coordinated by the state system.
+
+Text Styling
+~~~~~~~~~~~~
+
+Text defaults to font size 14 and font.WeightRegular. Size changes FontSize.
+Weight changes FontWeight. Col sets an explicit color and marks hasCustomColor.
+
+Without Col, Paint reads theme.Current().Palette.TextPrimary at paint time. This
+allows the active global theme to control ordinary text. With Col, the custom
+color takes precedence.
+
+Text Layout and Paint
+~~~~~~~~~~~~~~~~~~~~~
+
+Layout measures the current string with text.MeasureText and constrains the
+result. Paint records DrawText at local origin (0, 0), using the selected size,
+weight, and color.
+
+Font measurement, glyph rasterization, baseline behavior, and final compositing
+belong to the text, font, and renderer packages.
+
+ButtonComponent
+---------------
+
+ButtonComponent describes an interactive button with:
+
+- Label.
+- Optional Icon.
+- OnClickFunc callback.
+- ButtonVariant.
+- Optional Child component.
+
+Button creates a primary button by default. The current file defines button data
+and fluent configuration; the broader widget or event system determines how the
+callback is attached and invoked.
+
+Button Variants
+~~~~~~~~~~~~~~~
+
+ButtonVariant values are:
+
+- ButtonPrimary: emphasized default action.
+- ButtonSecondary: supporting action.
+- ButtonOutline: outlined treatment.
+- ButtonGhost: low-emphasis treatment.
+- ButtonDanger: destructive-action treatment.
+
+The variant is a semantic choice. Visual colors and state behavior are applied by
+the component implementation or widget styling layer that consumes it.
+
+WithIcon
+~~~~~~~~
+
+WithIcon stores an icon string. displayText prefixes the label with the icon and
+a space when Icon is non-empty. An empty icon leaves the label unchanged.
+
+The current API treats icons as strings. Whether the string is a glyph, symbol,
+or other display text is decided by the font and rendering layers.
+
+OnClick
+~~~~~~~
+
+OnClick stores the callback and returns the button for fluent configuration. It
+does not execute the callback. Event dispatch is responsible for invoking it at
+the appropriate interaction point.
+
+Variant Methods
+~~~~~~~~~~~~~~~
+
+Primary, Danger, Secondary, Outline, and Ghost set Variant and return the same
+button pointer. Calling multiple methods uses the last method called.
+
+displayText
+~~~~~~~~~~~
+
+displayText is an internal helper that combines Icon and Label for display. It
+is not exported and does not change Label itself.
+
+Lifecycle Integration
+---------------------
+
+Builder components are normally used through Node:
+
+    root := ui.Column(
+        ui.Padding(ui.All(16), ui.Text("Hello")),
+        ui.Button("Save"),
+    )
+
+The UI runtime creates a Node for root, reconciles its child components, lays out
+the tree under constraints, and paints it into a render.Canvas. Builder Layout
+methods assign child bounds; builder Paint methods record commands using local
+coordinates.
+
+Node Identity and Children
+--------------------------
+
+Most container builders synchronize declarative Children with node.Children by
+position. When the count stays the same, existing nodes are reused and their
+Component values are replaced. When the count changes, a new slice of child
+nodes is created.
+
+This simple positional model does not provide keyed list reconciliation. Stateful
+components whose order changes may need a more explicit identity strategy in a
+future reconciler.
+
+Coordinate Spaces
+-----------------
+
+Builder layout methods generally assign child bounds relative to their parent.
+Node.Paint later translates the Canvas by each node's bounds origin. Components
+inside a Container, Padding, Center, Flex, or Stack should therefore paint using
+local coordinates.
+
+Geometry helpers such as Pt, Sz, All, and RadiusUniform make those local values
+readable while preserving the core geometry types.
+
+Performance Notes
+-----------------
+
+Builder methods prioritize readable component composition. Repeated layout can
+allocate temporary FlexChildInput or StackChildInput slices, and child
+synchronization may allocate when counts change.
+
+Command recording itself is delegated to render.Canvas and CommandBuffer. For
+performance-sensitive lists, use virtualization or measure the actual workload
+before changing builder structure.
+
+Concurrency
+-----------
+
+Builder component fields are mutable and have no internal synchronization. Build,
+Layout, Paint, and fluent configuration should normally occur under the UI
+runtime's ownership rules, usually on one coordinated goroutine.
+
+Changing a component's fields while another goroutine lays it out or paints it
+can race. Reactive Signal reads also require the state package's synchronization
+contract.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- Column and Row set expected direction and default alignment.
+- GapSpacing, AlignMain, and AlignCross update fluent configuration.
+- Flex layout assigns child bounds and recognizes Expanded and Spacer.
+- Stack preserves child order and alignment.
+- Center positions a child at expected offsets.
+- Padding deflates constraints and restores outer dimensions.
+- Container applies size, margin, padding, background, border, radius, and shadow.
+- Container paint order is shadow, background, border, then child.
+- Text accepts static and reactive values.
+- Text layout follows current Signal content.
+- Text color defaults to the active theme unless Col is used.
+- Button defaults to primary and variant methods update it.
+- WithIcon produces the expected display text.
+- OnClick stores but does not execute the callback during configuration.
+
+Tests should inspect command output for paint behavior and use layout results for
+geometry behavior. Event invocation tests belong near the event dispatcher or
+widget code that consumes ButtonComponent.
+
+Maintenance Checklist
+---------------------
+
+When changing builders.go:
+
+1. Preserve fluent methods returning the receiver.
+2. Document defaults and whether values are copied or referenced.
+3. Keep child-parent links correct during synchronization.
+4. Preserve local-coordinate assumptions for Paint.
+5. Keep layout calculations delegated to the layout package.
+6. Keep paint order explicit for styled containers.
+7. Define how reactive values affect both layout and paint.
+8. Keep button semantics separate from event dispatch execution.
+9. Review positional child reuse when adding dynamic containers.
+10. Add focused tests for new builders and configuration methods.
+
+Summary
+-------
+
+builders.go is Nova's convenient component-construction layer. It provides
+flex, stack, spacing, centering, padding, styled containers, reactive text, and
+buttons through readable constructors and fluent methods.
+
+The important boundaries are clear: builders configure components, Node retains
+and traverses them, layout computes bounds, Canvas records drawing commands, and
+the renderer produces pixels. Maintaining those boundaries keeps the fluent API
+pleasant while preserving predictable layout, paint order, state, and identity.

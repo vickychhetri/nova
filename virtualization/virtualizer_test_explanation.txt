@@ -1,0 +1,269 @@
+Virtualizer Test Explanation
+============================
+
+Purpose
+-------
+
+virtualization/virtualizer_test.go contains correctness and performance checks
+for the fixed-height Virtualizer path. It verifies visible ranges at the top and
+middle of a very large list, then benchmarks repeated range lookup.
+
+The test package is virtualization_test, so it uses the public API as an external
+caller would. It does not inspect private fields or depend on internal cache
+structures.
+
+Test Constants
+--------------
+
+TestVirtualizer uses:
+
+    totalItems     = 1,000,000
+    itemHeight     = 30
+    viewportHeight = 600
+
+A million-item count tests that fixed-height range calculation depends on item
+height and viewport position rather than scanning the complete list.
+
+With 30-unit items and a 600-unit viewport:
+
+    600 / 30 = 20 visible items
+
+The default Virtualizer overscan is three items. The expected range therefore
+contains the viewport items plus nearby preparation items, subject to inclusive
+end-index and list-boundary rules.
+
+Virtualizer Setup
+-----------------
+
+The test creates the virtualizer through the public constructor:
+
+    v := virtualization.NewVirtualizer(totalItems, itemHeight)
+
+This verifies the normal fixed-height configuration and also uses the
+constructor's default Overscan value of three.
+
+The test does not configure ItemHeightFn, so ComputeVisibleRange must select its
+O(1) fixed-height path.
+
+Top Position Check
+------------------
+
+The first query is:
+
+    r0 := v.ComputeVisibleRange(0, viewportHeight)
+
+At scroll offset zero, the first visible item is index zero. Subtracting three
+overscan items would produce a negative start, so the result must clamp
+StartIndex to zero.
+
+The first assertion checks exactly that:
+
+    r0.StartIndex == 0
+
+The next assertion requires EndIndex to be at least 20. It intentionally does
+not require one exact end value because the range is inclusive and the
+implementation may include the item at the viewport boundary plus overscan.
+The important contract is that all viewport content is included.
+
+The top query also protects against a common off-by-one or overscan bug: a
+virtualizer must not return a negative item index when the viewport begins at
+the start of the data set.
+
+Middle Position Check
+---------------------
+
+The second query uses scroll offset 150,000:
+
+    rMid := v.ComputeVisibleRange(150_000, viewportHeight)
+
+With item height 30:
+
+    150,000 / 30 = 5,000
+
+So the viewport begins around item index 5,000. The default overscan can move the
+returned start backward by three items, making a result near 4,997 expected.
+
+The test accepts StartIndex from 4,990 through 5,000. This broad range protects
+the important middle-list behavior without coupling the test too tightly to one
+boundary convention or a small implementation adjustment.
+
+The middle query proves that the algorithm handles a large scroll position and
+returns a range near the corresponding item rather than always returning the
+list start or scanning incorrectly.
+
+Why the Test Uses Ranges
+------------------------
+
+The assertions focus on invariants:
+
+- The top start cannot be negative.
+- The viewport must be represented by the returned end.
+- A middle scroll must map near the mathematically corresponding index.
+
+They do not assert every range field. More exact tests could assert EndIndex and
+StartOffset once the desired inclusive-boundary policy is made part of the
+public contract.
+
+Benchmark Purpose
+-----------------
+
+BenchmarkVirtualizer1MillionItems measures repeated fixed-height range queries
+against one million logical items.
+
+The virtualizer is created before b.ResetTimer. Setup and allocation of the
+Virtualizer are excluded, leaving ComputeVisibleRange as the measured operation.
+
+The loop changes scroll position using:
+
+    float64(i % 500_000)
+
+This varies queries across half the data set without allowing the offset to grow
+without bound during a long benchmark run. The viewport height remains 800.
+
+The benchmark does not create rows, measure content, fetch data, lay out widgets,
+or render pixels. It isolates range arithmetic.
+
+Expected Complexity
+-------------------
+
+Because ItemHeightFn is nil and ItemHeight is positive, the benchmark exercises
+fixed-height mode. The expected lookup is O(1):
+
+1. Divide scroll offset by item height.
+2. Calculate visible count from viewport height.
+3. Apply overscan.
+4. Clamp to list boundaries.
+
+Total item count should affect only final clamping, not the number of scanned
+items. A regression that loops through one million entries for every query would
+show up strongly in this benchmark.
+
+Running the Test
+----------------
+
+Run the correctness test with:
+
+    go test ./virtualization -run '^TestVirtualizer$'
+
+Run all package tests with:
+
+    go test ./virtualization
+
+Run the benchmark with memory statistics using:
+
+    go test ./virtualization -run '^$' -bench BenchmarkVirtualizer1MillionItems -benchmem
+
+Run multiple samples when comparing changes:
+
+    go test ./virtualization -run '^$' -bench BenchmarkVirtualizer1MillionItems -count 5
+
+Keep Go version, architecture, CPU load, and compiler settings consistent when
+comparing benchmark numbers.
+
+What This File Covers
+---------------------
+
+The test covers:
+
+- Public fixed-height constructor behavior.
+- Default overscan indirectly.
+- Top-of-list clamping.
+- Inclusion of viewport content.
+- Middle-of-list index mapping.
+- Large total-count handling.
+- Fixed-height range lookup performance.
+
+What This File Does Not Cover
+-----------------------------
+
+The current test does not cover:
+
+- Dynamic ItemHeightFn calculations.
+- Variable row heights.
+- TotalContentHeight.
+- Empty or zero-count lists.
+- Zero or negative viewport heights.
+- Negative scroll offsets.
+- Overscan values other than the constructor default.
+- Near-end list clamping.
+- Exact StartOffset behavior.
+- Callback invocation counts.
+- Row creation or rendering.
+- Concurrent configuration or queries.
+
+These cases should be added as focused tests rather than making the existing
+large-list test responsible for every behavior.
+
+Recommended Correctness Extensions
+-----------------------------------
+
+Useful additional tests include:
+
+- An empty virtualizer returns the zero VisibleRange.
+- A one-item list never returns an index above zero.
+- A viewport larger than the list clamps EndIndex to the final item.
+- A scroll offset near the end clamps the overscanned end.
+- A custom Overscan value expands the expected range.
+- A dynamic height callback produces the correct variable range.
+- TotalContentHeight sums dynamic heights.
+- Exact boundary offsets follow documented inclusive rules.
+- StartOffset matches the intended returned-index or viewport-start meaning.
+- A non-positive fixed height uses the documented fallback behavior.
+
+Recommended Benchmark Extensions
+---------------------------------
+
+Additional benchmarks could compare:
+
+- Fixed versus dynamic height lookup.
+- Shallow versus deep scroll positions in dynamic mode.
+- Different overscan values.
+- TotalContentHeight for large dynamic lists.
+- Expensive versus cached ItemHeightFn callbacks.
+- Repeated identical scroll positions versus changing positions.
+
+Each benchmark should state whether it measures the virtualizer arithmetic, the
+height callback, allocation, or a surrounding list workflow.
+
+Failure Interpretation
+----------------------
+
+If the top assertion fails, inspect index clamping and overscan subtraction.
+
+If the top end assertion fails, inspect visible-count rounding, inclusive end
+semantics, and whether the viewport boundary is included.
+
+If the middle assertion fails, inspect fixed-height division, scroll units,
+integer conversion, and overscan application.
+
+If benchmark performance regresses, determine whether the change affects fixed
+path arithmetic, allocations, or benchmark environment before changing code.
+
+Maintenance Guidelines
+----------------------
+
+When changing this test:
+
+1. Keep million-item scale when testing large-list behavior.
+2. Keep arithmetic comments synchronized with constants.
+3. State whether range indices are inclusive.
+4. Keep setup outside the timed benchmark region when measuring lookup only.
+5. Avoid asserting incidental implementation details without a contract reason.
+6. Add dynamic-height tests separately.
+7. Include beginning and ending boundary cases.
+8. Keep benchmark environment consistent for comparisons.
+9. Use public APIs from the external test package where possible.
+10. Update this explanation when workload scope or expected semantics change.
+
+Summary
+-------
+
+TestVirtualizer protects the fixed-height range contract for a one-million-item
+list. It verifies safe top clamping, viewport inclusion, and correct middle
+mapping while the benchmark checks that lookup remains efficient at large total
+counts.
+
+The test intentionally leaves dynamic heights, exact boundary policy, total
+height, and rendering to focused follow-up tests. Its main value is preserving
+the simple and important guarantee that fixed-height virtualization can find a
+small visible range without scanning the entire data set.

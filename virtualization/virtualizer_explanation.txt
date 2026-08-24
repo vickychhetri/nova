@@ -1,0 +1,413 @@
+Nova Virtualizer Explanation
+============================
+
+Purpose
+-------
+
+virtualization/virtualizer.go calculates which items in a large list or table
+should be prepared for a viewport. It avoids requiring the UI to create, lay
+out, and render every item when only a small visible region is needed.
+
+The Virtualizer supports two measurement modes:
+
+- Fixed-height mode uses one ItemHeight and calculates the range directly.
+- Dynamic-height mode uses ItemHeightFn and scans item heights until the
+  viewport is covered.
+
+The result is a VisibleRange containing inclusive start and end indices plus the
+content-space offset of the first returned item.
+
+Virtualizer State
+-----------------
+
+Virtualizer stores:
+
+    TotalCount   int
+    ItemHeight   float64
+    ItemHeightFn func(index int) float64
+    Overscan     int
+
+TotalCount is the number of logical items, including items outside the current
+viewport. ItemHeight is the common height for fixed lists and a fallback height
+when no dynamic function is provided. ItemHeightFn supplies per-index heights
+for variable-height content. Overscan expands the prepared range around the
+visible region.
+
+The type does not store scroll position or viewport size. Those values are input
+to ComputeVisibleRange, allowing one virtualizer to answer queries for changing
+scroll positions and viewport dimensions.
+
+Creating a Virtualizer
+----------------------
+
+NewVirtualizer creates a fixed-height virtualizer:
+
+    v := virtualization.NewVirtualizer(100000, 32)
+
+It stores total count and item height and sets Overscan to 3. The constructor does
+not clamp totalCount or itemHeight. Non-positive values are handled by later
+methods according to their edge-case rules.
+
+The returned pointer can be configured for a different overscan or dynamic
+measurement:
+
+    v.Overscan = 8
+    v.ItemHeightFn = func(index int) float64 {
+        return measureRow(index)
+    }
+
+Once ItemHeightFn is non-nil, range and total-height calculations use dynamic
+mode.
+
+TotalContentHeight
+------------------
+
+TotalContentHeight returns the logical height of all items combined.
+
+Fixed-height mode uses direct multiplication:
+
+    total = TotalCount * ItemHeight
+
+This is O(1) and avoids visiting every item.
+
+Dynamic-height mode calls ItemHeightFn for every index from 0 through
+TotalCount-1 and sums the results. Its complexity is O(TotalCount), and the
+function can be expensive if item measurement performs layout or data access.
+
+The dynamic total follows the same height callback used by range calculation,
+so callers should keep ItemHeightFn deterministic for stable geometry. If heights
+change, call the method again to obtain a new total.
+
+Non-positive TotalCount returns zero immediately. A negative ItemHeight in fixed
+mode is not rejected by TotalContentHeight; the multiplication follows the
+stored value. Applications should provide non-negative heights when using the
+virtualizer for physical layout.
+
+VisibleRange
+------------
+
+VisibleRange contains:
+
+    StartIndex  int
+    EndIndex    int
+    StartOffset float64
+
+StartIndex and EndIndex are inclusive. The range includes both viewport items
+and overscan items. StartOffset is the logical content-space y-position of
+StartIndex, before subtracting the current scroll offset.
+
+For example, a range with StartIndex 10, EndIndex 20, and StartOffset 320 means
+item 10 begins at content y=320 and items 10 through 20 should be prepared.
+
+The zero VisibleRange represents no work:
+
+    StartIndex  = 0
+    EndIndex    = 0
+    StartOffset = 0
+
+Because zero can also look like a one-item range, callers that need to
+ distinguish empty results should also apply the same input policy or add an
+ explicit validity check at a higher layer.
+
+ComputeVisibleRange Inputs
+--------------------------
+
+ComputeVisibleRange accepts:
+
+- scrollOffset: logical vertical position of the viewport's top edge.
+- viewportHeight: logical height of the visible viewport.
+
+Both values must use the same units as ItemHeight and ItemHeightFn. The method
+returns a zero range when TotalCount is non-positive or viewportHeight is not
+positive.
+
+The current implementation does not explicitly clamp a negative scrollOffset.
+Callers should normally clamp scrolling to zero before querying, or understand
+how a negative offset affects the direct and scanning calculations.
+
+Overscan
+--------
+
+Overscan is an item count, not a pixel distance. It expands StartIndex backward
+and EndIndex forward by that many indices, then clamps indices to the valid range
+0 through TotalCount-1.
+
+Overscan helps prevent visible pop-in during scrolling. Items just outside the
+viewport can be created or measured before they become visible.
+
+Larger overscan increases work and memory use. Smaller overscan reduces work but
+may expose creation latency during fast scrolling. The appropriate value depends
+on item complexity, scroll speed, and frame budget.
+
+Fixed-Height Mode
+-----------------
+
+Fixed-height mode is selected when ItemHeightFn is nil and ItemHeight is greater
+than zero. It uses direct arithmetic:
+
+1. Calculate the first visible index with floor(scrollOffset / ItemHeight).
+2. Calculate the viewport item count with ceil(viewportHeight / ItemHeight).
+3. Subtract Overscan from the first index and clamp to zero.
+4. Add visible count and Overscan to form the inclusive end and clamp to the last
+   item.
+5. Calculate StartOffset as StartIndex * ItemHeight.
+
+The important complexity property is O(1). TotalCount does not affect lookup time
+except for the final index clamp.
+
+For a fixed item height H, the approximate first visible index is:
+
+    floor(scrollOffset / H)
+
+The method uses integer conversion after math.Floor, so fractional scroll values
+are handled consistently.
+
+Fixed-Height Example
+--------------------
+
+With:
+
+    TotalCount   = 100
+    ItemHeight   = 20
+    Overscan     = 3
+    scrollOffset = 200
+    viewport     = 100
+
+The first visible item is approximately index 10, and five items fit in the
+viewport. Overscan expands the range backward and forward, subject to list
+boundaries. StartOffset is the content position of the clamped StartIndex.
+
+Exact end behavior should be verified against tests when changing the algorithm,
+because EndIndex is inclusive and the arithmetic intentionally includes an extra
+boundary allowance around the visible count.
+
+Dynamic-Height Mode
+-------------------
+
+Dynamic mode is used when ItemHeightFn is non-nil, including when ItemHeight is
+not positive. The algorithm cannot jump directly to an index because each item's
+position depends on the sum of all preceding heights.
+
+It scans from index zero while maintaining curY, the content-space start position
+of the current item:
+
+1. Select the item's height from ItemHeightFn, or ItemHeight if no callback is
+   available.
+2. When the item reaches the scroll position and start is not set, choose the
+   item as the first visible item and subtract Overscan.
+3. If curY has passed the viewport's bottom, set the end plus trailing overscan
+   and stop scanning.
+4. Add the item height to curY.
+5. Track the current item as the latest end.
+
+The scan is O(n) from the beginning of the list to the end of the requested
+viewport. For large dynamic lists with frequent queries, an indexed height cache,
+prefix sums, or a tree structure could reduce lookup cost, but those are outside
+the current implementation.
+
+Dynamic Height Fallback
+-----------------------
+
+Inside the dynamic scan, ItemHeight is used as the initial height value. When
+ItemHeightFn is non-nil, the callback replaces it for each item. This fallback
+makes the loop structurally tolerant of a nil callback, although the method only
+reaches this path when fixed mode was not selected, such as a non-positive fixed
+height.
+
+ItemHeightFn should return a stable, meaningful non-negative height for each
+index. Negative or unusual values can prevent curY from progressing as expected
+and may produce incorrect ranges.
+
+Dynamic Start Offset
+--------------------
+
+When the first viewport-reaching item is found, StartOffset is set to curY, the
+position of that item before the overscan index is applied. This means that when
+Overscan moves StartIndex backward, StartOffset still describes the first item
+that physically reached the viewport rather than necessarily the returned
+StartIndex.
+
+Consumers that need the exact content position of StartIndex should recompute the
+prefix height for the overscanned items or use a future API that returns both
+positions explicitly. The current field preserves the scan position associated
+with the viewport boundary.
+
+End Boundary
+------------
+
+The dynamic scan stops when curY is greater than scrollOffset + viewportHeight.
+The current item and trailing overscan are included according to the loop's
+inclusive end updates.
+
+This boundary policy intentionally keeps a small amount of content around the
+viewport. Changes to >= versus > or to the order of height accumulation can alter
+whether an item exactly at the boundary is included, so such changes should be
+covered by focused tests.
+
+Total Count Boundaries
+----------------------
+
+All returned indices are intended to remain within:
+
+    0 <= index <= TotalCount - 1
+
+Fixed mode clamps both ends explicitly. Dynamic mode starts at zero and clamps
+the overscanned start and end. Empty or non-positive TotalCount returns a zero
+range before index arithmetic.
+
+When TotalCount is one, both returned indices should resolve to the only valid
+item for a positive viewport and usable height. Boundary-focused tests should
+cover empty, one-item, and near-end lists.
+
+Performance Characteristics
+---------------------------
+
+Fixed mode:
+
+- Range calculation is O(1).
+- No per-item callback calls are required.
+- It is appropriate for very large lists with uniform row heights.
+
+Dynamic mode:
+
+- Range calculation is O(n) from the list start to the viewport end.
+- ItemHeightFn can be called for every scanned row.
+- TotalContentHeight is O(TotalCount).
+- It is flexible but can become expensive for deep scroll positions.
+
+The type performs no caching of dynamic heights. If ItemHeightFn repeats expensive
+measurement, callers may cache measurements outside the virtualizer or a future
+implementation may add an internal height index.
+
+Typical Usage
+-------------
+
+A fixed-height list can use:
+
+    v := virtualization.NewVirtualizer(itemCount, rowHeight)
+    visible := v.ComputeVisibleRange(scrollY, viewportHeight)
+
+Then the caller prepares items from StartIndex through EndIndex inclusive.
+StartOffset can position the first prepared item in content space.
+
+A dynamic list can use:
+
+    v := &virtualization.Virtualizer{
+        TotalCount: itemCount,
+        ItemHeight: estimatedHeight,
+        ItemHeightFn: func(index int) float64 {
+            return rowHeight(index)
+        },
+        Overscan: 4,
+    }
+
+The estimated ItemHeight can serve as a fallback or documentation value, while
+the callback supplies actual per-index measurements.
+
+Scrolling and Rendering
+-----------------------
+
+A typical frame flow is:
+
+1. Read the current scroll offset.
+2. Determine viewport height.
+3. Ask Virtualizer for VisibleRange.
+4. Build or update only the returned items.
+5. Position the first item using the appropriate content offset.
+6. Layout and paint visible plus overscan items.
+7. Recompute on scroll or height changes.
+
+Virtualizer does not create UI nodes, recycle views, fetch data, or render rows.
+Those responsibilities belong to the list or table component using the range.
+
+Variable Height Changes
+-----------------------
+
+If ItemHeightFn returns a different height after content changes, both total
+content height and visible ranges may change. The caller should invalidate any
+layout or scroll metrics that depend on the old values.
+
+Dynamic measurement can also create feedback loops: measuring a row changes its
+height, which changes later positions, which changes the visible range. A list
+component should define when measurements become stable and when it requests a
+new layout pass.
+
+Threading
+---------
+
+Virtualizer has exported mutable fields and no internal synchronization. It is
+normally configured and queried by one layout or scrolling owner.
+
+Changing TotalCount, ItemHeight, Overscan, or ItemHeightFn concurrently with a
+range query can race. If multiple goroutines need access, protect the complete
+configuration and query lifecycle externally.
+
+Edge Cases
+----------
+
+The implementation handles these cases directly:
+
+- TotalCount <= 0: returns zero total height or zero range.
+- viewportHeight <= 0: returns zero range.
+- ItemHeightFn nil and ItemHeight > 0: uses O(1) fixed mode.
+- ItemHeightFn non-nil: uses dynamic scanning.
+- Overscan near list boundaries: clamps indices.
+- Empty scan before a visible item: falls back to start index zero.
+
+Callers should still avoid negative heights, NaN values, and infinite heights
+unless they have explicitly defined behavior for them. Such values can make
+integer conversion, comparisons, or accumulation unstable.
+
+Testing Guidance
+----------------
+
+Useful tests include:
+
+- NewVirtualizer sets count, height, and default overscan.
+- Fixed TotalContentHeight multiplies count by height.
+- Dynamic TotalContentHeight sums every callback result.
+- Empty and non-positive inputs return zero values.
+- Fixed ranges use inclusive valid indices.
+- Fixed ranges clamp at the beginning and end of the list.
+- Fixed StartOffset matches the returned start index's fixed position.
+- Dynamic ranges respond to variable heights.
+- Dynamic callbacks receive the expected indices.
+- Overscan expands both sides and remains within list bounds.
+- Near-boundary scroll positions include expected items.
+- ItemHeightFn changes mode from fixed to dynamic.
+- Deep dynamic queries remain correct when row heights differ.
+- Height changes update total height and visible range.
+
+Benchmarking should compare fixed and dynamic modes separately. Dynamic callback
+cost and total-list size both affect its result, while fixed lookup should remain
+nearly independent of total count.
+
+Maintenance Checklist
+---------------------
+
+When changing virtualizer.go:
+
+1. Keep StartIndex and EndIndex inclusive, or update all consumers together.
+2. Keep returned indices within the valid item range.
+3. Document whether StartOffset refers to the returned start or viewport start.
+4. Preserve O(1) fixed-height lookup when possible.
+5. Keep dynamic height accumulation consistent with TotalContentHeight.
+6. Define behavior for zero, negative, NaN, and infinite heights.
+7. Preserve overscan clamping at list boundaries.
+8. Add tests for exact viewport boundary positions.
+9. Keep data fetching and view recycling outside the arithmetic helper.
+10. Protect mutable configuration externally when used across goroutines.
+
+Summary
+-------
+
+Virtualizer reduces large-list work by returning only the viewport's item range
+plus an overscan buffer. Uniform heights use direct O(1) arithmetic; variable
+heights use a forward scan driven by ItemHeightFn. TotalContentHeight provides
+the complete content extent, while VisibleRange provides inclusive indices and a
+content-space offset.
+
+The core maintenance concerns are preserving index boundary semantics, keeping
+height units consistent, handling dynamic measurement costs, and ensuring that
+consumers understand the difference between viewport position and overscanned
+range position.

@@ -13,7 +13,8 @@ import (
 	"github.com/vickychhetri/nova/theme"
 )
 
-// Insets and geometry helper re-exports
+// Geometry helper re-exports keep common layout construction concise for users
+// of the ui package while preserving the underlying core/geom value types.
 var (
 	All            = geom.All
 	Symmetric      = geom.Symmetric
@@ -26,7 +27,8 @@ var (
 
 // --- Flex Components (Column & Row) ---
 
-// FlexComponent implements a flexbox container (Column or Row).
+// FlexComponent implements a flexbox container for horizontal or vertical
+// children. Layout delegates measurement and distribution to layout.ComputeFlex.
 type FlexComponent struct {
 	BaseComponent
 	Direction AxisDirection
@@ -36,10 +38,13 @@ type FlexComponent struct {
 	Children  []Component
 }
 
+// AxisDirection selects the main direction of a FlexComponent.
 type AxisDirection int
 
 const (
+	// DirHorizontal lays children out from left to right.
 	DirHorizontal AxisDirection = iota
+	// DirVertical lays children out from top to bottom.
 	DirVertical
 )
 
@@ -63,22 +68,30 @@ func Row(children ...Component) *FlexComponent {
 	}
 }
 
+// GapSpacing sets the gap between adjacent flex children and returns f for
+// fluent configuration.
 func (f *FlexComponent) GapSpacing(gap float64) *FlexComponent {
 	f.Gap = gap
 	return f
 }
 
+// AlignMain sets the main-axis distribution policy and returns f.
 func (f *FlexComponent) AlignMain(align layout.MainAxisAlignment) *FlexComponent {
 	f.MainAxis = align
 	return f
 }
 
+// AlignCross sets the cross-axis alignment policy and returns f.
 func (f *FlexComponent) AlignCross(align layout.CrossAxisAlignment) *FlexComponent {
 	f.CrossAxis = align
 	return f
 }
 
+// Layout synchronizes component children with node children, measures them, and
+// assigns the bounds returned by the flex layout engine.
 func (f *FlexComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
+	// Reuse child nodes when the count is unchanged so their runtime state is
+	// retained while the declarative component values are refreshed.
 	// Sync children
 	if len(node.Children) != len(f.Children) {
 		node.Children = make([]*Node, len(f.Children))
@@ -103,6 +116,8 @@ func (f *FlexComponent) Layout(node *Node, constraints layout.BoxConstraints) ge
 		}
 
 		cNode := chNode
+		// Expanded and Spacer contribute flex space; ordinary children are
+		// measured without a flex factor.
 		flexInputs[i] = layout.FlexChildInput{
 			Flex: flexFactor,
 			Measure: func(c layout.BoxConstraints) geom.Size {
@@ -130,6 +145,8 @@ func (f *FlexComponent) Layout(node *Node, constraints layout.BoxConstraints) ge
 	return res.Size
 }
 
+// Paint paints flex children in their resolved order. The node's Paint method
+// already establishes the node-local canvas translation.
 func (f *FlexComponent) Paint(node *Node, canvas *render.Canvas) {
 	for _, child := range node.Children {
 		child.Paint(canvas)
@@ -138,14 +155,15 @@ func (f *FlexComponent) Paint(node *Node, canvas *render.Canvas) {
 
 // --- Stack Component ---
 
-// StackComponent implements a layered stack layout.
+// StackComponent implements a layered layout in which children share a
+// container and may overlap.
 type StackComponent struct {
 	BaseComponent
 	Alignment layout.Alignment
 	Children  []Component
 }
 
-// Stack creates a layered stack layout.
+// Stack creates a layered stack layout with top-left alignment by default.
 func Stack(children ...Component) *StackComponent {
 	return &StackComponent{
 		Alignment: layout.AlignTopLeft,
@@ -153,6 +171,8 @@ func Stack(children ...Component) *StackComponent {
 	}
 }
 
+// Layout synchronizes stack children, measures them, and assigns the bounds
+// computed by layout.ComputeStack.
 func (s *StackComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	if len(node.Children) != len(s.Children) {
 		node.Children = make([]*Node, len(s.Children))
@@ -179,6 +199,8 @@ func (s *StackComponent) Layout(node *Node, constraints layout.BoxConstraints) g
 	return res.Size
 }
 
+// Paint draws stack children in order, allowing later children to appear above
+// earlier children in painter-style rendering.
 func (s *StackComponent) Paint(node *Node, canvas *render.Canvas) {
 	for _, child := range node.Children {
 		child.Paint(canvas)
@@ -187,17 +209,20 @@ func (s *StackComponent) Paint(node *Node, canvas *render.Canvas) {
 
 // --- Expanded & Spacer ---
 
+// ExpandedComponent gives its child a flex factor inside a FlexComponent.
 type ExpandedComponent struct {
 	BaseComponent
 	FlexFactor float64
 	Child      Component
 }
 
-// Expanded expands a child within a flex Row or Column.
+// Expanded expands child within a flex Row or Column using flex factor 1.
 func Expanded(child Component) *ExpandedComponent {
 	return &ExpandedComponent{FlexFactor: 1.0, Child: child}
 }
 
+// Layout mounts or updates the wrapped child and lays it out using the supplied
+// constraints. The flex parent controls the space passed to this component.
 func (e *ExpandedComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	if len(node.Children) == 0 {
 		childNode := NewNode(e.Child)
@@ -211,12 +236,15 @@ func (e *ExpandedComponent) Layout(node *Node, constraints layout.BoxConstraints
 	return sz
 }
 
+// Paint delegates drawing to the expanded child.
 func (e *ExpandedComponent) Paint(node *Node, canvas *render.Canvas) {
 	if len(node.Children) > 0 {
 		node.Children[0].Paint(canvas)
 	}
 }
 
+// SpacerComponent is an empty component whose flex parent can allocate it
+// remaining space.
 type SpacerComponent struct {
 	BaseComponent
 }
@@ -234,16 +262,20 @@ func (s *SpacerComponent) Paint(node *Node, canvas *render.Canvas) {}
 
 // --- Center & Padding ---
 
+// CenterComponent sizes itself to the available bounded space and positions its
+// child at the resulting center.
 type CenterComponent struct {
 	BaseComponent
 	Child Component
 }
 
-// Center centers a child within available space.
+// Center centers child within the available space.
 func Center(child Component) *CenterComponent {
 	return &CenterComponent{Child: child}
 }
 
+// Layout measures the child loosely, chooses the available bounded container
+// size, and assigns the centered child offset.
 func (c *CenterComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	if len(node.Children) == 0 {
 		childNode := NewNode(c.Child)
@@ -271,23 +303,27 @@ func (c *CenterComponent) Layout(node *Node, constraints layout.BoxConstraints) 
 	return containerSz
 }
 
+// Paint delegates drawing to the centered child.
 func (c *CenterComponent) Paint(node *Node, canvas *render.Canvas) {
 	if len(node.Children) > 0 {
 		node.Children[0].Paint(canvas)
 	}
 }
 
+// PaddingComponent adds edge insets around a single child.
 type PaddingComponent struct {
 	BaseComponent
 	Insets geom.Insets
 	Child  Component
 }
 
-// Padding adds insets around a child.
+// Padding creates a component that adds insets around child.
 func Padding(insets geom.Insets, child Component) *PaddingComponent {
 	return &PaddingComponent{Insets: insets, Child: child}
 }
 
+// Layout deflates constraints for the child, then adds the insets back to the
+// child's measured size and positions it inside the padding area.
 func (p *PaddingComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	if len(node.Children) == 0 {
 		childNode := NewNode(p.Child)
@@ -306,6 +342,7 @@ func (p *PaddingComponent) Layout(node *Node, constraints layout.BoxConstraints)
 	return constraints.Constrain(geom.Sz(totalW, totalH))
 }
 
+// Paint delegates drawing to the padded child.
 func (p *PaddingComponent) Paint(node *Node, canvas *render.Canvas) {
 	if len(node.Children) > 0 {
 		node.Children[0].Paint(canvas)
@@ -314,6 +351,8 @@ func (p *PaddingComponent) Paint(node *Node, canvas *render.Canvas) {
 
 // --- Container & Card ---
 
+// ContainerComponent describes a styled box with optional size, margin,
+// padding, background, border, radius, shadow, and child content.
 type ContainerComponent struct {
 	BaseComponent
 	Width       *float64
@@ -328,63 +367,75 @@ type ContainerComponent struct {
 	Child       Component
 }
 
-// Container creates a styled rectangular container box.
+// Container creates an initially unstyled container box for fluent configuration.
 func Container() *ContainerComponent {
 	return &ContainerComponent{}
 }
 
+// WithChild sets the container's single child.
 func (c *ContainerComponent) WithChild(child Component) *ContainerComponent {
 	c.Child = child
 	return c
 }
 
+// Size sets explicit width and height constraints for the container.
 func (c *ContainerComponent) Size(width, height float64) *ContainerComponent {
 	c.Width = &width
 	c.Height = &height
 	return c
 }
 
+// WithWidth sets an explicit container width.
 func (c *ContainerComponent) WithWidth(w float64) *ContainerComponent {
 	c.Width = &w
 	return c
 }
 
+// WithHeight sets an explicit container height.
 func (c *ContainerComponent) WithHeight(h float64) *ContainerComponent {
 	c.Height = &h
 	return c
 }
 
+// Pad sets the container's inner padding.
 func (c *ContainerComponent) Pad(insets geom.Insets) *ContainerComponent {
 	c.Padding = insets
 	return c
 }
 
+// Marg sets the container's outer margin.
 func (c *ContainerComponent) Marg(insets geom.Insets) *ContainerComponent {
 	c.Margin = insets
 	return c
 }
 
+// Bg sets the container background color.
 func (c *ContainerComponent) Bg(col color.Color) *ContainerComponent {
 	c.Background = col
 	return c
 }
 
+// Border sets the container border color and stroke width.
 func (c *ContainerComponent) Border(col color.Color, width float64) *ContainerComponent {
 	c.BorderColor = col
 	c.BorderWidth = width
 	return c
 }
 
+// Rounded sets per-corner container radii.
 func (c *ContainerComponent) Rounded(radius geom.CornerRadius) *ContainerComponent {
 	c.Radius = radius
 	return c
 }
 
+// DropShadow sets the container shadow parameters.
 func (c *ContainerComponent) DropShadow(shadow render.ShadowParams) *ContainerComponent {
 	c.Shadow = &shadow
 	return c
 }
 
+// Layout mounts or updates the optional child, computes the decorated box size,
+// and stores the child bounds returned by the box layout engine.
 func (c *ContainerComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	if c.Child != nil {
 		if len(node.Children) == 0 {
@@ -418,6 +469,9 @@ func (c *ContainerComponent) Layout(node *Node, constraints layout.BoxConstraint
 	return containerSz
 }
 
+// Paint records shadow, background, border, and child commands in that visual
+// order. Transparent or non-positive style values skip their corresponding
+// drawing operation.
 func (c *ContainerComponent) Paint(node *Node, canvas *render.Canvas) {
 	innerBounds := geom.NewRect(
 		c.Margin.Left,
@@ -426,12 +480,12 @@ func (c *ContainerComponent) Paint(node *Node, canvas *render.Canvas) {
 		node.Bounds.Height-c.Margin.Vertical(),
 	)
 
-	// Draw shadow
+	// Draw shadow first so subsequent background and border content appears above it.
 	if c.Shadow != nil {
 		canvas.DrawShadow(innerBounds, c.Radius, *c.Shadow)
 	}
 
-	// Draw background
+	// Draw background only when it has visible alpha.
 	if c.Background.A > 0 {
 		if c.Radius.TopLeft > 0 || c.Radius.TopRight > 0 || c.Radius.BottomRight > 0 || c.Radius.BottomLeft > 0 {
 			canvas.FillRoundedRect(innerBounds, c.Radius, c.Background)
@@ -440,7 +494,7 @@ func (c *ContainerComponent) Paint(node *Node, canvas *render.Canvas) {
 		}
 	}
 
-	// Draw border
+	// Draw border above the background.
 	if c.BorderWidth > 0 && c.BorderColor.A > 0 {
 		if c.Radius.TopLeft > 0 || c.Radius.TopRight > 0 || c.Radius.BottomRight > 0 || c.Radius.BottomLeft > 0 {
 			canvas.StrokeRoundedRect(innerBounds, c.Radius, c.BorderColor, c.BorderWidth)
@@ -449,7 +503,7 @@ func (c *ContainerComponent) Paint(node *Node, canvas *render.Canvas) {
 		}
 	}
 
-	// Paint child
+	// Paint child content last so it appears inside the decorated container.
 	if len(node.Children) > 0 {
 		node.Children[0].Paint(canvas)
 	}
@@ -457,6 +511,7 @@ func (c *ContainerComponent) Paint(node *Node, canvas *render.Canvas) {
 
 // --- Text Component ---
 
+// TextComponent renders static text or a reactive string signal.
 type TextComponent struct {
 	BaseComponent
 	Content        string
@@ -467,7 +522,8 @@ type TextComponent struct {
 	FontWeight     int
 }
 
-// Text creates a text label with string or reactive state.
+// Text creates a text label from a string, reactive string signal, integer state
+// value, fmt.Stringer, or any value accepted by fmt.Sprintf.
 func Text(value any) *TextComponent {
 	tc := &TextComponent{
 		FontSize:   14,
@@ -490,22 +546,28 @@ func Text(value any) *TextComponent {
 	return tc
 }
 
+// Size sets the text font size and returns t for fluent configuration.
 func (t *TextComponent) Size(sz float64) *TextComponent {
 	t.FontSize = sz
 	return t
 }
 
+// Weight sets the text font weight and returns t.
 func (t *TextComponent) Weight(w int) *TextComponent {
 	t.FontWeight = w
 	return t
 }
 
+// Col sets an explicit text color and returns t. Without Col, Paint uses the
+// active theme's TextPrimary token.
 func (t *TextComponent) Col(c color.Color) *TextComponent {
 	t.Color = c
 	t.hasCustomColor = true
 	return t
 }
 
+// Layout measures the current static or signal-provided string and constrains
+// the resulting size.
 func (t *TextComponent) Layout(node *Node, constraints layout.BoxConstraints) geom.Size {
 	str := t.Content
 	if t.Signal != nil {
@@ -515,6 +577,8 @@ func (t *TextComponent) Layout(node *Node, constraints layout.BoxConstraints) ge
 	return constraints.Constrain(sz)
 }
 
+// Paint reads the current text value and records it using either the custom
+// color or the active theme's primary text color.
 func (t *TextComponent) Paint(node *Node, canvas *render.Canvas) {
 	str := t.Content
 	if t.Signal != nil {
@@ -529,6 +593,8 @@ func (t *TextComponent) Paint(node *Node, canvas *render.Canvas) {
 
 // --- Button Component ---
 
+// ButtonComponent describes an interactive button with label, optional icon,
+// click action, visual variant, and optional custom child content.
 type ButtonComponent struct {
 	BaseComponent
 	Label       string
@@ -538,17 +604,23 @@ type ButtonComponent struct {
 	Child       Component
 }
 
+// ButtonVariant selects the visual treatment of a ButtonComponent.
 type ButtonVariant int
 
 const (
+	// ButtonPrimary is the default emphasized button style.
 	ButtonPrimary ButtonVariant = iota
+	// ButtonSecondary is a supporting button style.
 	ButtonSecondary
+	// ButtonOutline is an outlined button style.
 	ButtonOutline
+	// ButtonGhost is a low-emphasis button style.
 	ButtonGhost
+	// ButtonDanger is intended for destructive actions.
 	ButtonDanger
 )
 
-// Button creates an interactive button.
+// Button creates an interactive primary button with label.
 func Button(label string) *ButtonComponent {
 	return &ButtonComponent{
 		Label:   label,
@@ -556,41 +628,49 @@ func Button(label string) *ButtonComponent {
 	}
 }
 
+// WithIcon adds a leading icon string to the button display text.
 func (b *ButtonComponent) WithIcon(icon string) *ButtonComponent {
 	b.Icon = icon
 	return b
 }
 
+// OnClick registers the callback invoked for a click and returns b.
 func (b *ButtonComponent) OnClick(fn func()) *ButtonComponent {
 	b.OnClickFunc = fn
 	return b
 }
 
+// Primary selects the primary button variant.
 func (b *ButtonComponent) Primary() *ButtonComponent {
 	b.Variant = ButtonPrimary
 	return b
 }
 
+// Danger selects the destructive-action button variant.
 func (b *ButtonComponent) Danger() *ButtonComponent {
 	b.Variant = ButtonDanger
 	return b
 }
 
+// Secondary selects the secondary button variant.
 func (b *ButtonComponent) Secondary() *ButtonComponent {
 	b.Variant = ButtonSecondary
 	return b
 }
 
+// Outline selects the outlined button variant.
 func (b *ButtonComponent) Outline() *ButtonComponent {
 	b.Variant = ButtonOutline
 	return b
 }
 
+// Ghost selects the low-emphasis ghost button variant.
 func (b *ButtonComponent) Ghost() *ButtonComponent {
 	b.Variant = ButtonGhost
 	return b
 }
 
+// displayText returns the label with an optional icon prefix for rendering.
 func (b *ButtonComponent) displayText() string {
 	if b.Icon != "" {
 		return b.Icon + " " + b.Label

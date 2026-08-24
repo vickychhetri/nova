@@ -1,0 +1,291 @@
+Nova UI Integration Test Explanation
+====================================
+
+Purpose
+-------
+
+ui/ui_test.go contains an integration test for Nova's public component-tree
+pipeline. It verifies that a declarative tree can be built, mounted, laid out,
+painted into render commands, hit-tested, and connected to a button callback.
+
+The test is intentionally broader than a unit test for one helper. It checks the
+hand-off between these layers:
+
+    builder components
+          |
+          v
+       Node.Mount
+          |
+          v
+       Node.Layout
+          |
+          v
+       Node.Paint
+          |
+          v
+    CommandBuffer
+          |
+          v
+       Node.HitTest
+          |
+          v
+      click callback
+
+It does not open a native operating-system window or verify rasterized pixels.
+Those concerns belong to platform and renderer tests.
+
+External Package Testing
+------------------------
+
+The test uses package ui_test instead of package ui. This makes it exercise the
+exported API from the perspective of an external consumer. It cannot rely on
+unexported Node or component fields except through exported fields and methods
+that are intentionally part of the public model.
+
+Callback Setup
+--------------
+
+The test starts with:
+
+    clicked := false
+
+The button callback sets clicked to true. The final assertion verifies that the
+hit-test target's click handler was actually reached and executed.
+
+This is more useful than checking only that a non-nil callback exists. A callback
+could be present on the wrong node; invoking it confirms that the tested target
+is connected to the configured behavior.
+
+Building the Component Tree
+---------------------------
+
+The tree contains a vertical Column with two children:
+
+1. A Text component containing "Welcome to Nova".
+2. A horizontal Row containing one Button labeled "Click Me".
+
+The Row uses an 8-unit gap, and the outer Column uses a 12-unit gap. These gaps
+make the test exercise nested layout and parent-relative positioning.
+
+The button is configured with OnClick and stores a callback that updates clicked.
+The test does not call the callback at construction time; it waits until after
+hit testing to prove the event target path.
+
+Mounting
+--------
+
+The test creates a retained root node:
+
+    node := ui.NewNode(tree)
+
+Then it mounts the tree with:
+
+    node.Mount(ui.BuildContext{
+        Theme: theme.Dark(),
+        Scale: 1.0,
+    })
+
+Mount triggers component reconciliation and creates the retained child nodes.
+The dark theme and unit scale provide explicit context rather than relying on
+implicit zero values.
+
+Mounting is important because later layout, paint, and hit testing operate on
+Nodes, not only on the original declarative Component value.
+
+Layout Assertion
+----------------
+
+The root is laid out with tight 400 by 300 constraints:
+
+    layout.Tight(geom.Sz(400, 300))
+
+The test expects the returned size to be exactly 400 by 300. This confirms that
+the root honors the supplied tight constraints and that the component tree can
+produce a valid measured result.
+
+The assertion checks both dimensions because a component could accidentally
+honor only one axis while still returning a plausible-looking size.
+
+The test does not inspect every child bound during this phase. The later button
+center calculation relies on those bounds and provides an indirect verification
+that nested layout produced usable positions.
+
+Painting Assertion
+------------------
+
+The test creates a CommandBuffer and Canvas, then calls:
+
+    node.Paint(canvas)
+
+Canvas records render commands rather than drawing directly to a native window.
+The test checks that the buffer length is nonzero.
+
+This assertion verifies that the mounted tree produced visual work. It does not
+assert an exact command count because the test is intended to tolerate reasonable
+changes in component paint implementation, such as adding a background or
+additional decoration.
+
+It also does not verify final pixels. Command construction and pixel
+rasterization are separate responsibilities and should have separate focused
+tests.
+
+Finding the Button Node
+-----------------------
+
+The test accesses the expected retained path:
+
+    rowNode := node.Children[1]
+    btnNode := rowNode.Children[0]
+
+The root Column's second child is the Row, and the Row's first child is the
+Button. This is a deliberate assertion about the simple builder tree shape.
+
+If component structure changes, this path should be updated together with the
+test's expected tree description. A more general test could search by key or
+component identity, but direct indexing keeps this integration scenario concise.
+
+Absolute Button Center
+----------------------
+
+The button's center is calculated in the root coordinate space by adding the
+origins of each nested node:
+
+    x = root.X + row.X + button.X + button.Width / 2
+    y = root.Y + row.Y + button.Y + button.Height / 2
+
+The test uses geom.Pt to build that point.
+
+Bounds are parent-relative. The button position is relative to the row, the row
+position is relative to the column, and the column position is relative to the
+root's parent coordinate space. Adding those origins reconstructs a point that
+can be passed to the root's HitTest method.
+
+The center is chosen rather than an edge point so the test avoids ambiguous
+boundary behavior and is unlikely to land outside the button because of a
+one-pixel rounding difference.
+
+Hit Testing
+-----------
+
+The test calls:
+
+    hit := node.HitTest(btnCenter)
+
+Node.HitTest traverses children from topmost paint order toward the front and
+returns the deepest interactive node containing the point. Since the point lies
+inside the button, the expected result is a non-nil button node.
+
+The first assertion rejects a missing target. A successful hit proves that the
+retained bounds, parent-relative layout, interactive handler detection, and
+coordinate traversal agree well enough to locate the button.
+
+Callback Execution
+------------------
+
+After a hit is found, the test checks whether hit.OnClick is non-nil and invokes
+it. The final assertion expects clicked to be true.
+
+This test invokes the callback directly after obtaining the hit target rather
+than simulating a complete platform pointer event. That keeps the scope focused
+on tree hit testing and target selection. Event dispatch, pointer press mapping,
+and propagation should be covered in separate tests.
+
+What the Test Covers
+--------------------
+
+The test verifies:
+
+- Public builder composition.
+- Nested Column and Row structure.
+- Button callback configuration.
+- Node creation and mounting.
+- BuildContext theme and scale setup.
+- Tight root layout constraints.
+- Non-empty render command recording.
+- Parent-relative bounds used to calculate absolute coordinates.
+- Deep interactive-node hit testing.
+- Button callback reachability.
+
+What the Test Does Not Cover
+----------------------------
+
+The test does not verify:
+
+- Exact text measurement or glyph output.
+- Exact flex gap dimensions.
+- Every child bound independently.
+- Pointer event propagation or StopPropagation.
+- Hover enter and leave transitions.
+- Keyboard, scroll, or focus events.
+- Overlay hit testing.
+- Native X11 or other platform event translation.
+- Rasterizer pixel correctness.
+- Theme color contrast.
+- Concurrent tree access.
+- Dynamic reconciliation after a state update.
+- Unmount cleanup behavior.
+
+Keeping these concerns separate makes failures easier to localize. A failure in
+this test indicates a problem crossing the public component, node, layout, paint,
+or hit-test boundaries; it does not by itself identify a renderer or platform
+bug.
+
+Failure Diagnostics
+-------------------
+
+The layout failure includes the actual Size using its String method. The paint
+failure reports only that no commands were recorded because the expected
+condition is simple. The hit-test and callback failures identify the missing
+stage of interaction.
+
+The test uses t.Fatal and t.Fatalf because later operations depend on earlier
+ones. For example, continuing after a nil hit would make callback assertions
+misleading.
+
+Recommended Extensions
+----------------------
+
+Focused follow-up tests could add:
+
+- A command count and payload assertion for Text and Button painting.
+- Child-bound assertions for Column, Row, and gap placement.
+- A Restore-coordinate test after nested layout painting.
+- Overlapping children to verify reverse-order hit selection.
+- A pointer event dispatch test that checks propagation.
+- A reactive text update followed by relayout and repaint.
+- An unmount test that verifies cleanup functions execute.
+- A theme-switch test that verifies redraw invalidation.
+- A scale test using a non-unit scale factor.
+
+Each extension should state whether it protects component construction, retained
+node state, layout geometry, command recording, or event routing.
+
+Maintenance Guidelines
+----------------------
+
+When changing this test:
+
+1. Keep the component tree description near the setup code.
+2. Preserve explicit BuildContext values.
+3. Keep the layout constraints intentional and documented.
+4. Calculate hit points from actual parent-relative bounds.
+5. Prefer interior points over boundaries for stable hit assertions.
+6. Keep native and rasterizer behavior in their own test packages.
+7. Update the expected child path when builder structure changes.
+8. Add exact assertions only when they protect a meaningful contract.
+9. Keep callback assertions tied to the target selected by hit testing.
+10. Run the focused UI tests after modifying the component lifecycle.
+
+Summary
+-------
+
+TestUIComponentTreeAndHitTest is a compact end-to-end check for Nova's public UI
+pipeline. It builds a nested component tree, mounts it into retained Nodes, lays
+it out under tight constraints, records paint commands, reconstructs the
+button's absolute center from nested bounds, finds the interactive target, and
+verifies the click callback.
+
+Its strength is testing the boundaries between builders, Node lifecycle, layout,
+Canvas recording, and hit testing without depending on a native display or
+specific rasterizer pixels. More specialized tests should cover the detailed
+behavior that this integration test intentionally leaves out.
